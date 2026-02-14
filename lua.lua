@@ -373,200 +373,148 @@ local function KickPlayer(targetPlayer)
 end
 
 -- =========================================================
--- [[ PCLD ]]
--- =========================================================
--- =========================================================
--- [[ PCLD ESP ]] — вставить в основной скрипт после Window
+-- [[ PCLD ESP ]] — вставить после создания Window
 -- =========================================================
 do
-    local Players = game:GetService("Players")
-    local RunService = game:GetService("RunService")
     local WS = game:GetService("Workspace")
+    local Players = game:GetService("Players")
     local LP = Players.LocalPlayer
 
-    -- настройки
-    local pcldEnabled = false
+    local pcldOn = false
     local pcldColor = Color3.fromRGB(255, 0, 0)
-    local pcldTransparency = 0.5
+    local pcldTrans = 0.5
 
-    -- хранилище
-    local pcldConns = {}        -- активные подписки
-    local myPCLD = nil          -- ссылка на свой PCLD (чтоб не подсвечивать)
+    local trackedPCLD = nil -- ссылка на единственный PCLD
+    local conns = {}        -- коннекты для очистки
+
     local PCLD_NAME = "PlayerCharacterLocationDetector"
 
-    -- отключить коннект по ключу
-    local function disconn(key)
-        if pcldConns[key] then
-            pcall(function() pcldConns[key]:Disconnect() end)
-            pcldConns[key] = nil
+    -- отключить коннект
+    local function disc(key)
+        if conns[key] then
+            pcall(function() conns[key]:Disconnect() end)
+            conns[key] = nil
         end
     end
 
-    -- отключить все
-    local function disconnAll()
-        for k, _ in pairs(pcldConns) do
-            disconn(k)
-        end
-    end
-
-    -- проверка: это мой PCLD?
-    local function isMyPCLD(part)
-        if myPCLD and myPCLD == part then return true end
-
-        -- если myPCLD ещё не найден, пробуем определить
+    -- это мой PCLD? (проверяем по расстоянию до своего персонажа)
+    local function isMine(part)
         local char = LP.Character
         if not char then return false end
         local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
         if not hrp then return false end
-
-        -- PCLD спавнится примерно на позиции игрока (чуть ниже)
-        local diff = part.Position - (hrp.Position - Vector3.new(0, 0.51, 0))
-        if diff.Magnitude < 1 then
-            myPCLD = part
-            part.Transparency = 1
-            return true
-        end
-
-        return false
+        -- PCLD спавнится почти на позиции игрока
+        return (part.Position - hrp.Position).Magnitude < 2
     end
 
-    -- применить стиль к одному PCLD
-    local function applyStyle(part)
+    -- применить стиль
+    local function applyStyle()
+        if not trackedPCLD or not trackedPCLD.Parent then return end
+        pcall(function()
+            trackedPCLD.Transparency = pcldTrans
+            trackedPCLD.Color = pcldColor
+        end)
+    end
+
+    -- сбросить стиль
+    local function resetStyle()
+        if trackedPCLD and trackedPCLD.Parent then
+            pcall(function() trackedPCLD.Transparency = 1 end)
+        end
+        trackedPCLD = nil
+    end
+
+    -- попробовать захватить PCLD
+    local function tryTrack(part)
         if not part or not part.Parent then return end
         if part.Name ~= PCLD_NAME then return end
+        if not part:IsA("BasePart") then return end
 
-        pcall(function()
-            if isMyPCLD(part) then
-                part.Transparency = 1
-                return
-            end
+        -- свой пропускаем
+        if isMine(part) then return end
 
-            if pcldEnabled then
-                part.Transparency = pcldTransparency
-                part.Color = pcldColor
-            end
-        end)
+        trackedPCLD = part
+        if pcldOn then applyStyle() end
     end
 
-    -- применить ко всем существующим
-    local function applyToAll()
-        for _, part in pairs(WS:GetChildren()) do
-            if part.Name == PCLD_NAME and part:IsA("BasePart") then
-                applyStyle(part)
+    -- найти PCLD среди текущих детей workspace
+    local function scanWorkspace()
+        trackedPCLD = nil
+        for _, child in pairs(WS:GetChildren()) do
+            if child.Name == PCLD_NAME and child:IsA("BasePart") then
+                if not isMine(child) then
+                    trackedPCLD = child
+                    break
+                end
             end
         end
     end
 
-    -- сбросить все PCLD в невидимые
-    local function resetAll()
-        myPCLD = nil
-        for _, part in pairs(WS:GetChildren()) do
-            pcall(function()
-                if part.Name == PCLD_NAME and part:IsA("BasePart") then
-                    part.Transparency = 1
-                end
-            end)
-        end
-    end
+    -- включить
+    local function enable()
+        pcldOn = true
+        scanWorkspace()
+        if trackedPCLD then applyStyle() end
 
-    -- включить PCLD ESP
-    local function enablePCLD()
-        pcldEnabled = true
-        myPCLD = nil
-
-        -- подсветить существующие
-        applyToAll()
-
-        -- новые детали
-        disconn("childAdded")
-        pcldConns["childAdded"] = WS.ChildAdded:Connect(function(part)
-            if not pcldEnabled then return end
-            if part.Name == PCLD_NAME and part:IsA("BasePart") then
-                task.wait(0.1) -- даём серверу обработать позицию
-                applyStyle(part)
-            end
+        -- новый PCLD появился
+        disc("added")
+        conns["added"] = WS.ChildAdded:Connect(function(part)
+            if not pcldOn then return end
+            if part.Name ~= PCLD_NAME then return end
+            task.wait(0.15) -- ждём пока сервер выставит позицию
+            tryTrack(part)
         end)
 
-        -- периодически перечекивать свой PCLD (он может переспавниться)
-        disconn("heartbeat")
-        pcldConns["heartbeat"] = RunService.Heartbeat:Connect(function()
-            if not pcldEnabled then return end
-
-            -- если myPCLD удалён, сбросить и найти заново
-            if myPCLD and not myPCLD.Parent then
-                myPCLD = nil
-            end
-
-            -- если ещё не нашли свой — ищем
-            if not myPCLD then
-                local char = LP.Character
-                if not char then return end
-                local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
-                if not hrp then return end
-
-                for _, part in pairs(WS:GetChildren()) do
-                    if part.Name == PCLD_NAME and part:IsA("BasePart") then
-                        local diff = part.Position - (hrp.Position - Vector3.new(0, 0.51, 0))
-                        if diff.Magnitude < 1 then
-                            myPCLD = part
-                            part.Transparency = 1
-                            break
-                        end
-                    end
-                end
-            end
-
-            -- свой всегда невидим
-            if myPCLD and myPCLD.Parent then
-                pcall(function() myPCLD.Transparency = 1 end)
+        -- PCLD удалён (игрок вышел, респавн и т.д.)
+        disc("removed")
+        conns["removed"] = WS.ChildRemoved:Connect(function(part)
+            if part == trackedPCLD then
+                trackedPCLD = nil
             end
         end)
     end
 
-    -- выключить PCLD ESP
-    local function disablePCLD()
-        pcldEnabled = false
-        disconnAll()
-        resetAll()
+    -- выключить
+    local function disable()
+        pcldOn = false
+        resetStyle()
+        disc("added")
+        disc("removed")
     end
 
     -- ====== GUI ======
-    local TabESP = Window:CreateTab("PCLD ESP", 4483362458)
-    TabESP:CreateSection("PCLD ESP")
+    local TabPCLD = Window:CreateTab("PCLD ESP", 4483362458)
+    TabPCLD:CreateSection("PCLD ESP")
 
-    TabESP:CreateToggle({
+    TabPCLD:CreateToggle({
         Name = "PCLD ESP",
         CurrentValue = false,
-        Flag = "PCLDESPToggle",
-        Callback = function(val)
-            if val then
-                enablePCLD()
-            else
-                disablePCLD()
-            end
+        Flag = "PCLDToggle",
+        Callback = function(v)
+            if v then enable() else disable() end
         end,
     })
 
-    TabESP:CreateColorPicker({
-        Name = "PCLD Color",
+    TabPCLD:CreateColorPicker({
+        Name = "Color",
         Color = pcldColor,
-        Flag = "PCLDColorPicker",
-        Callback = function(val)
-            pcldColor = val
-            if pcldEnabled then applyToAll() end
+        Flag = "PCLDColor",
+        Callback = function(v)
+            pcldColor = v
+            if pcldOn and trackedPCLD then applyStyle() end
         end,
     })
 
-    TabESP:CreateSlider({
-        Name = "PCLD Transparency",
+    TabPCLD:CreateSlider({
+        Name = "Transparency",
         Range = {0, 1},
         Increment = 0.05,
         Suffix = "",
-        CurrentValue = pcldTransparency,
-        Flag = "PCLDTransSlider",
-        Callback = function(val)
-            pcldTransparency = val
-            if pcldEnabled then applyToAll() end
+        CurrentValue = pcldTrans,
+        Flag = "PCLDTrans",
+        Callback = function(v)
+            pcldTrans = v
+            if pcldOn and trackedPCLD then applyStyle() end
         end,
     })
 end
@@ -976,5 +924,6 @@ TabVisual:CreateButton({Name = "Refresh ESP", Callback = function() if espActive
 -- === PHYSICS ===
 TabPhys:CreateToggle({Name = "PCLD", CurrentValue = false, Callback = function(v) pcldActive = v end})
 TabPhys:CreateToggle({Name = "Packet Detector", CurrentValue = false, Callback = function(v) _G.PacketMonitor = v end})
+
 
 
