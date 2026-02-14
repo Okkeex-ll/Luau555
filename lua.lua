@@ -1,7 +1,7 @@
 -- [[ RAYFIELD ]]
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-    Name = "fife | 0.4",
+    Name = "fife | 0.5",
     LoadingTitle = "Loading...",
     ConfigurationSaving = {
         Enabled = false,
@@ -924,6 +924,7 @@ TabVisual:CreateButton({Name = "Refresh ESP", Callback = function() if espActive
 -- === PHYSICS ===
 TabPhys:CreateToggle({Name = "PCLD", CurrentValue = false, Callback = function(v) pcldActive = v end})
 TabPhys:CreateToggle({Name = "Packet Detector", CurrentValue = false, Callback = function(v) _G.PacketMonitor = v end})
+
 
 
 
