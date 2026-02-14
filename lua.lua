@@ -1,17 +1,16 @@
 -- ============================================================
--- fife | 1.0
+-- fife | 1.1
 -- ============================================================
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-    Name = "fife | 1.0",
+    Name = "fife | 1.1",
     LoadingTitle = "fife",
     LoadingSubtitle = "loading...",
-    ConfigurationSaving = { Enabled = false, FileName = "fife10" },
+    ConfigurationSaving = { Enabled = false, FileName = "fife11" },
     KeySystem = false,
 })
 
--- сервисы
 local Players     = game:GetService("Players")
 local RunService  = game:GetService("RunService")
 local RepStorage  = game:GetService("ReplicatedStorage")
@@ -104,15 +103,19 @@ local customJump   = 50
 local selectBind   = Enum.KeyCode.X
 
 -- kick конфиг
-local REGRAB_DIST     = 30
-local REGRAB_CD       = 0.6
-local REGRAB_BURSTS   = 5
-local REGRAB_WAIT     = 0.2
-local SPAM_INTERVAL   = 0.04
-local WEAPON_INTERVAL = 0.12
+local KICK_HOLD_OFFSET = Vector3.new(0, 15, 0)
+local KICK_BP_P        = 500000
+local KICK_BP_D        = 50
+local KICK_BG_D        = 100
+local REGRAB_DIST      = 30
+local REGRAB_CD        = 0.6
+local REGRAB_BURSTS    = 5
+local REGRAB_WAIT      = 0.2
+local SPAM_INTERVAL    = 0.04
+local WEAPON_INTERVAL  = 0.12
 
 -- ============================================================
--- HUD
+-- HUD (красивый, по центру, скруглённый)
 -- ============================================================
 do
     local old = game:GetService("CoreGui"):FindFirstChild("fifeHUD")
@@ -125,31 +128,46 @@ do
     hud.IgnoreGuiInset = true
 
     local bar = Instance.new("Frame")
-    bar.Size = UDim2.new(1, 0, 0, 28)
-    bar.Position = UDim2.new(0, 0, 0, 0)
-    bar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    bar.BackgroundTransparency = 0.3
+    bar.Size = UDim2.new(0, 520, 0, 36)
+    bar.Position = UDim2.new(0.5, -260, 0, 6)
+    bar.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    bar.BackgroundTransparency = 0.15
     bar.BorderSizePixel = 0
     bar.Parent = hud
 
-    local function makeLabel(order, text)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 18)
+    corner.Parent = bar
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(80, 80, 120)
+    stroke.Thickness = 1.5
+    stroke.Transparency = 0.5
+    stroke.Parent = bar
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.VerticalAlignment = Enum.VerticalAlignment.Center
+    layout.Padding = UDim.new(0, 20)
+    layout.Parent = bar
+
+    local function makeLabel(text, col)
         local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(0, 160, 1, 0)
-        lbl.Position = UDim2.new(0, 10 + (order * 170), 0, 0)
+        lbl.Size = UDim2.new(0, 110, 0, 20)
         lbl.BackgroundTransparency = 1
         lbl.Font = Enum.Font.GothamBold
-        lbl.TextSize = 13
-        lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
-        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextSize = 12
+        lbl.TextColor3 = col or Color3.fromRGB(200, 200, 210)
         lbl.Text = text
         lbl.Parent = bar
         return lbl
     end
 
-    local lblNick    = makeLabel(0, "Nick: " .. LP.Name)
-    local lblFPS     = makeLabel(1, "FPS: --")
-    local lblPing    = makeLabel(2, "Ping: --")
-    local lblPlayers = makeLabel(3, "Players: --")
+    local lblNick    = makeLabel(LP.Name, Color3.fromRGB(130, 180, 255))
+    local lblFPS     = makeLabel("FPS: --")
+    local lblPing    = makeLabel("Ping: --")
+    local lblPlayers = makeLabel("0 online")
 
     hud.Parent = game:GetService("CoreGui")
 
@@ -171,14 +189,14 @@ do
                 local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
                 lblPing.Text = "Ping: " .. math.floor(ping) .. "ms"
             end)
-            lblPlayers.Text = "Players: " .. #Players:GetPlayers()
+            lblPlayers.Text = #Players:GetPlayers() .. " online"
             task.wait(0.5)
         end
     end)
 end
 
 -- ============================================================
--- KICK
+-- KICK (с BodyMovers + ownership — как работало раньше)
 -- ============================================================
 local function StopKick()
     if _G.StopKickFunc then
@@ -195,6 +213,52 @@ local function KickPlayer(target)
     local active = true
     local conns = {}
     local lastGrab = 0
+
+    local function cleanBM(hrp)
+        if not hrp then return end
+        pcall(function()
+            if hrp:FindFirstChild("KickBP") then hrp.KickBP:Destroy() end
+            if hrp:FindFirstChild("KickBG") then hrp.KickBG:Destroy() end
+        end)
+    end
+
+    local function ensureBM(tHRP, holdPos, lookCF)
+        if not tHRP or not tHRP.Parent then return end
+        local bp = tHRP:FindFirstChild("KickBP")
+        if not bp then
+            bp = Instance.new("BodyPosition")
+            bp.Name = "KickBP"
+            bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            bp.D = KICK_BP_D
+            bp.P = KICK_BP_P
+            bp.Parent = tHRP
+        end
+        bp.Position = holdPos
+
+        local bg = tHRP:FindFirstChild("KickBG")
+        if not bg then
+            bg = Instance.new("BodyGyro")
+            bg.Name = "KickBG"
+            bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+            bg.D = KICK_BG_D
+            bg.Parent = tHRP
+        end
+        bg.CFrame = lookCF
+    end
+
+    local function freezeTarget(tHRP, tHum)
+        if tHRP and tHRP.Parent then
+            pcall(function()
+                tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                tHRP.Velocity = Vector3.new(0, 0, 0)
+                tHRP.RotVelocity = Vector3.new(0, 0, 0)
+            end)
+        end
+        if tHum then
+            pcall(function() tHum.PlatformStand = true end)
+        end
+    end
 
     local function removeWeapons()
         pcall(function()
@@ -220,24 +284,47 @@ local function KickPlayer(target)
         active = false
         for _, c in pairs(conns) do pcall(function() c:Disconnect() end) end
         conns = {}
+        pcall(function()
+            if target and target.Character then
+                local r = target.Character:FindFirstChild("HumanoidRootPart")
+                cleanBM(r)
+                local h = target.Character:FindFirstChild("Humanoid")
+                if h then h.PlatformStand = false end
+            end
+        end)
     end
 
-    -- heartbeat: ownership каждый кадр
+    -- ПОТОК 1: Heartbeat — ownership + freeze + BodyMovers каждый кадр
     local hb = RunService.Heartbeat:Connect(function()
         if not active then return end
         pcall(function()
             if not target or not target.Parent then return end
-            local tHRP = getHRP(target)
+            local tChar = target.Character
+            if not tChar then return end
+            local tHRP = tChar:FindFirstChild("HumanoidRootPart")
+            local tHum = tChar:FindFirstChild("Humanoid")
             if not tHRP then return end
+
+            local mHRP = getHRP(LP)
+            if not mHRP then return end
+
+            -- ownership каждый кадр
             if tHRP.Position.Y < 2000 then
                 fireOwner(tHRP, tHRP.CFrame)
                 fireDestroy(tHRP)
             end
+
+            -- freeze
+            freezeTarget(tHRP, tHum)
+
+            -- BodyMovers
+            local holdPos = mHRP.Position + KICK_HOLD_OFFSET
+            ensureBM(tHRP, holdPos, mHRP.CFrame)
         end)
     end)
     table.insert(conns, hb)
 
-    -- доп спам
+    -- ПОТОК 2: доп спам ownership
     task.spawn(function()
         while active do
             pcall(function()
@@ -252,7 +339,7 @@ local function KickPlayer(target)
         end
     end)
 
-    -- TP-перехват + оружие
+    -- ПОТОК 3: TP перехват + оружие
     task.spawn(function()
         while active do
             pcall(function()
@@ -389,11 +476,11 @@ local function makeESP(plr)
     corner.CornerRadius = UDim.new(0, 6)
     corner.Parent = bg
 
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = espColor
-    stroke.Thickness = 1.5
-    stroke.Transparency = 0.3
-    stroke.Parent = bg
+    local uiStroke = Instance.new("UIStroke")
+    uiStroke.Color = espColor
+    uiStroke.Thickness = 1.5
+    uiStroke.Transparency = 0.3
+    uiStroke.Parent = bg
 
     local nameL = Instance.new("TextLabel")
     nameL.Size = UDim2.new(1, -8, 0.5, 0)
@@ -426,9 +513,7 @@ end
 local function createESP()
     clearESP()
     if not espEnabled then return end
-    for _, plr in pairs(Players:GetPlayers()) do
-        makeESP(plr)
-    end
+    for _, plr in pairs(Players:GetPlayers()) do makeESP(plr) end
 end
 
 local function updateESPColor()
@@ -448,7 +533,6 @@ local function updateESPColor()
     end
 end
 
--- дистанция
 task.spawn(function()
     while true do
         task.wait(0.4)
@@ -579,6 +663,7 @@ if createLine then pcall(function() createLine.OnClientEvent:Connect(function(..
 -- TARGET MANAGER
 -- ============================================================
 local DropSaved = nil
+local lastSelectedName = nil -- отслеживаем реальный выбор в dropdown
 
 local function getPlayerNames()
     local t = {}
@@ -628,18 +713,15 @@ Players.PlayerRemoving:Connect(function(plr)
             sysChat(plr.Name .. " left", Color3.fromRGB(100, 255, 100))
         end
     end
-    -- чистим ESP этого игрока
     local toRemove = {}
     for i, obj in pairs(espObjects) do
         pcall(function()
             if obj:IsA("Highlight") and obj.Parent and Players:GetPlayerFromCharacter(obj.Parent) == plr then
-                obj:Destroy()
-                table.insert(toRemove, i)
+                obj:Destroy() table.insert(toRemove, i)
             elseif obj:IsA("BillboardGui") and obj.Adornee then
                 local char = obj.Adornee.Parent
                 if char and Players:GetPlayerFromCharacter(char) == plr then
-                    obj:Destroy()
-                    table.insert(toRemove, i)
+                    obj:Destroy() table.insert(toRemove, i)
                 end
             end
         end)
@@ -671,7 +753,6 @@ local TabVisual = Window:CreateTab("Visuals", 4483362458)
 -- ==================== COMBAT ====================
 TabCombat:CreateSection("Target")
 
--- Server Players — просто для выбора, БЕЗ автообновления через :Set()
 TabCombat:CreateDropdown({
     Name = "Server Players",
     Options = getPlayerNames(),
@@ -683,6 +764,7 @@ TabCombat:CreateDropdown({
         local plr = Players:FindFirstChild(name)
         if not plr then return end
         selectedTarget = plr
+        lastSelectedName = name
     end,
 })
 
@@ -755,7 +837,6 @@ TabCombat:CreateButton({
     end,
 })
 
--- === KICK ===
 TabCombat:CreateSection("Kick")
 
 TabCombat:CreateToggle({
@@ -776,7 +857,6 @@ TabCombat:CreateToggle({
     end,
 })
 
--- === BIND ===
 TabCombat:CreateSection("Bind")
 
 local bindLabel = TabCombat:CreateLabel("Select bind: X")
@@ -802,7 +882,6 @@ TabCombat:CreateButton({
     end,
 })
 
--- основной обработчик ввода
 UIS.InputBegan:Connect(function(input, gpe)
     if gpe then return end
 
@@ -826,6 +905,7 @@ UIS.InputBegan:Connect(function(input, gpe)
             end
 
             selectedTarget = plr
+            lastSelectedName = plr.Name
             addToSaved(plr.Name)
             Rayfield:Notify({Title = "Selected", Content = plr.Name, Duration = 2})
             if _G.KickEnabled then KickPlayer(plr) end
@@ -835,107 +915,29 @@ end)
 
 -- ==================== MOVEMENT ====================
 TabMove:CreateSection("Teleport")
-TabMove:CreateToggle({
-    Name = "Loop TP to Target",
-    CurrentValue = false,
-    Callback = function(v) loopTPOn = v end,
-})
+TabMove:CreateToggle({Name = "Loop TP to Target", CurrentValue = false, Callback = function(v) loopTPOn = v end})
 
 TabMove:CreateSection("Speed")
-TabMove:CreateSlider({
-    Name = "Walk Speed",
-    Range = {16, 200}, Increment = 1, Suffix = "",
-    CurrentValue = 16,
-    Callback = function(v) customSpeed = v end,
-})
-TabMove:CreateSlider({
-    Name = "Jump Power",
-    Range = {50, 300}, Increment = 5, Suffix = "",
-    CurrentValue = 50,
-    Callback = function(v) customJump = v end,
-})
-TabMove:CreateToggle({
-    Name = "Noclip",
-    CurrentValue = false,
-    Callback = function(v) toggleNoclip(v) end,
-})
+TabMove:CreateSlider({Name = "Walk Speed", Range = {16, 200}, Increment = 1, Suffix = "", CurrentValue = 16, Callback = function(v) customSpeed = v end})
+TabMove:CreateSlider({Name = "Jump Power", Range = {50, 300}, Increment = 5, Suffix = "", CurrentValue = 50, Callback = function(v) customJump = v end})
+TabMove:CreateToggle({Name = "Noclip", CurrentValue = false, Callback = function(v) toggleNoclip(v) end})
 
 -- ==================== VISUALS ====================
 TabVisual:CreateSection("Player ESP")
-
-TabVisual:CreateToggle({
-    Name = "ESP",
-    CurrentValue = false,
-    Callback = function(v)
-        espEnabled = v
-        if v then createESP() else clearESP() end
-    end,
-})
-
-TabVisual:CreateColorPicker({
-    Name = "ESP Color",
-    Color = espColor,
-    Flag = "ESPColor",
-    Callback = function(v)
-        espColor = v
-        if espEnabled then updateESPColor() end
-    end,
-})
-
-TabVisual:CreateButton({
-    Name = "Refresh ESP",
-    Callback = function()
-        if espEnabled then createESP() end
-    end,
-})
+TabVisual:CreateToggle({Name = "ESP", CurrentValue = false, Callback = function(v) espEnabled = v if v then createESP() else clearESP() end end})
+TabVisual:CreateColorPicker({Name = "ESP Color", Color = espColor, Flag = "ESPColor", Callback = function(v) espColor = v if espEnabled then updateESPColor() end end})
+TabVisual:CreateButton({Name = "Refresh ESP", Callback = function() if espEnabled then createESP() end end})
 
 TabVisual:CreateSection("PCLD ESP")
-
-TabVisual:CreateToggle({
-    Name = "PCLD ESP",
-    CurrentValue = false,
-    Callback = function(v)
-        if v then enablePCLD() else disablePCLD() end
-    end,
-})
-
-TabVisual:CreateColorPicker({
-    Name = "PCLD Color",
-    Color = pcldColor,
-    Flag = "PCLDCol",
-    Callback = function(v)
-        pcldColor = v
-        if pcldOn and trackedPCLD then applyPCLD() end
-    end,
-})
-
-TabVisual:CreateSlider({
-    Name = "PCLD Transparency",
-    Range = {0, 1}, Increment = 0.05, Suffix = "",
-    CurrentValue = pcldTrans,
-    Flag = "PCLDTr",
-    Callback = function(v)
-        pcldTrans = v
-        if pcldOn and trackedPCLD then applyPCLD() end
-    end,
-})
+TabVisual:CreateToggle({Name = "PCLD ESP", CurrentValue = false, Callback = function(v) if v then enablePCLD() else disablePCLD() end end})
+TabVisual:CreateColorPicker({Name = "PCLD Color", Color = pcldColor, Flag = "PCLDCol", Callback = function(v) pcldColor = v if pcldOn and trackedPCLD then applyPCLD() end end})
+TabVisual:CreateSlider({Name = "PCLD Transparency", Range = {0, 1}, Increment = 0.05, Suffix = "", CurrentValue = pcldTrans, Flag = "PCLDTr", Callback = function(v) pcldTrans = v if pcldOn and trackedPCLD then applyPCLD() end end})
 
 TabVisual:CreateSection("Network")
-
-TabVisual:CreateToggle({
-    Name = "Packet Detector",
-    CurrentValue = false,
-    Callback = function(v) _G.PacketMonitor = v end,
-})
+TabVisual:CreateToggle({Name = "Packet Detector", CurrentValue = false, Callback = function(v) _G.PacketMonitor = v end})
 
 local simRadiusOn = false
-TabVisual:CreateToggle({
-    Name = "PCLD SimRadius",
-    CurrentValue = false,
-    Callback = function(v)
-        simRadiusOn = v
-    end,
-})
+TabVisual:CreateToggle({Name = "PCLD SimRadius", CurrentValue = false, Callback = function(v) simRadiusOn = v end})
 
 task.spawn(function()
     while true do
