@@ -1,13 +1,13 @@
 -- ============================================================
--- fife | 0.9
+-- fife | 1.0
 -- ============================================================
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-    Name = "fife | 0.9",
+    Name = "fife | 1.0",
     LoadingTitle = "fife",
     LoadingSubtitle = "loading...",
-    ConfigurationSaving = { Enabled = false, FileName = "fife09" },
+    ConfigurationSaving = { Enabled = false, FileName = "fife10" },
     KeySystem = false,
 })
 
@@ -37,7 +37,6 @@ local setOwner        = GE:WaitForChild("SetNetworkOwner", 5)
 local extendLine      = GE:FindFirstChild("ExtendGrabLine")
 local createLine      = GE:FindFirstChild("CreateGrabLine")
 
--- безопасные обёртки
 local function fireOwner(part, cf)
     if setOwner and part and part.Parent then
         pcall(function() setOwner:FireServer(part, cf) end)
@@ -104,7 +103,7 @@ local customSpeed  = 16
 local customJump   = 50
 local selectBind   = Enum.KeyCode.X
 
--- kick конфиг (внутренний, не в UI)
+-- kick конфиг
 local REGRAB_DIST     = 30
 local REGRAB_CD       = 0.6
 local REGRAB_BURSTS   = 5
@@ -113,18 +112,17 @@ local SPAM_INTERVAL   = 0.04
 local WEAPON_INTERVAL = 0.12
 
 -- ============================================================
--- HUD (FPS / Ping / Nick)
+-- HUD
 -- ============================================================
 do
+    local old = game:GetService("CoreGui"):FindFirstChild("fifeHUD")
+    if old then old:Destroy() end
+
     local hud = Instance.new("ScreenGui")
     hud.Name = "fifeHUD"
     hud.ResetOnSpawn = false
     hud.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     hud.IgnoreGuiInset = true
-
-    -- убираем старый если есть
-    local old = game:GetService("CoreGui"):FindFirstChild("fifeHUD")
-    if old then old:Destroy() end
 
     local bar = Instance.new("Frame")
     bar.Size = UDim2.new(1, 0, 0, 28)
@@ -134,7 +132,7 @@ do
     bar.BorderSizePixel = 0
     bar.Parent = hud
 
-    local function makeLabel(order, defaultText)
+    local function makeLabel(order, text)
         local lbl = Instance.new("TextLabel")
         lbl.Size = UDim2.new(0, 160, 1, 0)
         lbl.Position = UDim2.new(0, 10 + (order * 170), 0, 0)
@@ -143,7 +141,7 @@ do
         lbl.TextSize = 13
         lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
         lbl.TextXAlignment = Enum.TextXAlignment.Left
-        lbl.Text = defaultText
+        lbl.Text = text
         lbl.Parent = bar
         return lbl
     end
@@ -155,22 +153,18 @@ do
 
     hud.Parent = game:GetService("CoreGui")
 
-    -- fps
     local frameCount = 0
-    local lastFPSUpdate = tick()
-
+    local lastFPS = tick()
     RunService.Heartbeat:Connect(function()
         frameCount = frameCount + 1
         local now = tick()
-        if now - lastFPSUpdate >= 0.4 then
-            local fps = math.floor(frameCount / (now - lastFPSUpdate))
-            lblFPS.Text = "FPS: " .. fps
+        if now - lastFPS >= 0.4 then
+            lblFPS.Text = "FPS: " .. math.floor(frameCount / (now - lastFPS))
             frameCount = 0
-            lastFPSUpdate = now
+            lastFPS = now
         end
     end)
 
-    -- ping + players
     task.spawn(function()
         while true do
             pcall(function()
@@ -184,7 +178,7 @@ do
 end
 
 -- ============================================================
--- KICK (незаметный — только ownership + destroy + weapon)
+-- KICK
 -- ============================================================
 local function StopKick()
     if _G.StopKickFunc then
@@ -202,7 +196,6 @@ local function KickPlayer(target)
     local conns = {}
     local lastGrab = 0
 
-    -- удалить оружие цели
     local function removeWeapons()
         pcall(function()
             if not target or not target.Parent then return end
@@ -229,7 +222,7 @@ local function KickPlayer(target)
         conns = {}
     end
 
-    -- поток 1: heartbeat — ownership спам каждый кадр
+    -- heartbeat: ownership каждый кадр
     local hb = RunService.Heartbeat:Connect(function()
         if not active then return end
         pcall(function()
@@ -244,7 +237,7 @@ local function KickPlayer(target)
     end)
     table.insert(conns, hb)
 
-    -- поток 2: доп спам + оружие
+    -- доп спам
     task.spawn(function()
         while active do
             pcall(function()
@@ -259,7 +252,7 @@ local function KickPlayer(target)
         end
     end)
 
-    -- поток 3: TP-перехват + оружие
+    -- TP-перехват + оружие
     task.spawn(function()
         while active do
             pcall(function()
@@ -307,7 +300,6 @@ local function KickPlayer(target)
     end)
     table.insert(conns, rc)
 
-    -- респавн свой
     local mc = LP.CharacterAdded:Connect(function() task.wait(1) end)
     table.insert(conns, mc)
 
@@ -315,7 +307,7 @@ local function KickPlayer(target)
 end
 
 -- ============================================================
--- NOCLIP (оптимизированный — кешируем части)
+-- NOCLIP
 -- ============================================================
 local function cacheNoclipParts()
     noclipParts = {}
@@ -339,14 +331,13 @@ local function toggleNoclip(state)
     end
 end
 
--- рекеш при респавне
 LP.CharacterAdded:Connect(function()
     task.wait(0.5)
     if noclipOn then cacheNoclipParts() end
 end)
 
 -- ============================================================
--- SPEED / JUMP (через Heartbeat — не сбросится)
+-- SPEED / JUMP
 -- ============================================================
 RunService.Heartbeat:Connect(function()
     local hum = getHum(LP)
@@ -370,7 +361,6 @@ local function makeESP(plr)
     local head = char:FindFirstChild("Head")
     if not head then return end
 
-    -- highlight
     local hl = Instance.new("Highlight")
     hl.Name = "fifeHL"
     hl.FillTransparency = 0.75
@@ -380,7 +370,6 @@ local function makeESP(plr)
     hl.Parent = char
     table.insert(espObjects, hl)
 
-    -- billboard
     local bb = Instance.new("BillboardGui")
     bb.Name = "fifeBB"
     bb.Adornee = head
@@ -389,7 +378,6 @@ local function makeESP(plr)
     bb.AlwaysOnTop = true
     bb.Parent = head
 
-    -- фон
     local bg = Instance.new("Frame")
     bg.Size = UDim2.new(1, 0, 1, 0)
     bg.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
@@ -407,7 +395,6 @@ local function makeESP(plr)
     stroke.Transparency = 0.3
     stroke.Parent = bg
 
-    -- имя
     local nameL = Instance.new("TextLabel")
     nameL.Size = UDim2.new(1, -8, 0.5, 0)
     nameL.Position = UDim2.new(0, 4, 0, 2)
@@ -420,7 +407,6 @@ local function makeESP(plr)
     nameL.Text = plr.Name
     nameL.Parent = bg
 
-    -- дистанция
     local distL = Instance.new("TextLabel")
     distL.Name = "Dist"
     distL.Size = UDim2.new(1, -8, 0.5, 0)
@@ -462,7 +448,7 @@ local function updateESPColor()
     end
 end
 
--- обновление дистанции
+-- дистанция
 task.spawn(function()
     while true do
         task.wait(0.4)
@@ -492,32 +478,6 @@ task.spawn(function()
             end
         end
     end
-end)
-
--- авто-обновление ESP при входе/выходе
-Players.PlayerAdded:Connect(function(plr)
-    task.wait(2)
-    if espEnabled then makeESP(plr) end
-end)
-
-Players.PlayerRemoving:Connect(function(plr)
-    -- чистим объекты этого игрока
-    local toRemove = {}
-    for i, obj in pairs(espObjects) do
-        pcall(function()
-            if obj:IsA("Highlight") and obj.Parent and Players:GetPlayerFromCharacter(obj.Parent) == plr then
-                obj:Destroy()
-                table.insert(toRemove, i)
-            elseif obj:IsA("BillboardGui") and obj.Adornee then
-                local char = obj.Adornee.Parent
-                if char and Players:GetPlayerFromCharacter(char) == plr then
-                    obj:Destroy()
-                    table.insert(toRemove, i)
-                end
-            end
-        end)
-    end
-    for i = #toRemove, 1, -1 do table.remove(espObjects, toRemove[i]) end
 end)
 
 -- ============================================================
@@ -618,8 +578,7 @@ if createLine then pcall(function() createLine.OnClientEvent:Connect(function(..
 -- ============================================================
 -- TARGET MANAGER
 -- ============================================================
-local DropPlayers = nil
-local DropSaved   = nil
+local DropSaved = nil
 
 local function getPlayerNames()
     local t = {}
@@ -647,17 +606,7 @@ local function addToSaved(name)
     updateSavedDrop()
 end
 
--- обновление списка игроков
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        if DropPlayers then
-            pcall(function() DropPlayers:Set(getPlayerNames()) end)
-        end
-    end
-end)
-
--- алерты при входе/выходе сохранённых
+-- алерты
 Players.PlayerAdded:Connect(function(plr)
     for _, n in pairs(savedTargets) do
         if n == plr.Name then
@@ -670,6 +619,7 @@ Players.PlayerAdded:Connect(function(plr)
             end
         end
     end
+    if espEnabled then task.wait(2) makeESP(plr) end
 end)
 
 Players.PlayerRemoving:Connect(function(plr)
@@ -678,9 +628,26 @@ Players.PlayerRemoving:Connect(function(plr)
             sysChat(plr.Name .. " left", Color3.fromRGB(100, 255, 100))
         end
     end
+    -- чистим ESP этого игрока
+    local toRemove = {}
+    for i, obj in pairs(espObjects) do
+        pcall(function()
+            if obj:IsA("Highlight") and obj.Parent and Players:GetPlayerFromCharacter(obj.Parent) == plr then
+                obj:Destroy()
+                table.insert(toRemove, i)
+            elseif obj:IsA("BillboardGui") and obj.Adornee then
+                local char = obj.Adornee.Parent
+                if char and Players:GetPlayerFromCharacter(char) == plr then
+                    obj:Destroy()
+                    table.insert(toRemove, i)
+                end
+            end
+        end)
+    end
+    for i = #toRemove, 1, -1 do table.remove(espObjects, toRemove[i]) end
 end)
 
--- Loop TP
+-- loop TP
 task.spawn(function()
     while true do
         task.wait(0.3)
@@ -704,7 +671,8 @@ local TabVisual = Window:CreateTab("Visuals", 4483362458)
 -- ==================== COMBAT ====================
 TabCombat:CreateSection("Target")
 
-DropPlayers = TabCombat:CreateDropdown({
+-- Server Players — просто для выбора, БЕЗ автообновления через :Set()
+TabCombat:CreateDropdown({
     Name = "Server Players",
     Options = getPlayerNames(),
     CurrentOption = {},
@@ -715,19 +683,26 @@ DropPlayers = TabCombat:CreateDropdown({
         local plr = Players:FindFirstChild(name)
         if not plr then return end
         selectedTarget = plr
-        Rayfield:Notify({Title = "Target", Content = name, Duration = 2})
     end,
 })
 
 TabCombat:CreateButton({
     Name = "Add to Saved",
     Callback = function()
-        if selectedTarget then
-            addToSaved(selectedTarget.Name)
-            Rayfield:Notify({Title = "Saved", Content = selectedTarget.Name .. " added", Duration = 2})
-        else
+        if not selectedTarget or not selectedTarget.Parent then
             Rayfield:Notify({Title = "Error", Content = "Select a player first", Duration = 2})
+            return
         end
+        local name = selectedTarget.Name
+        for _, v in pairs(savedTargets) do
+            if v == name then
+                Rayfield:Notify({Title = "Info", Content = name .. " already saved", Duration = 2})
+                return
+            end
+        end
+        table.insert(savedTargets, name)
+        updateSavedDrop()
+        Rayfield:Notify({Title = "Saved", Content = name .. " added", Duration = 2})
     end,
 })
 
@@ -749,7 +724,6 @@ DropSaved = TabCombat:CreateDropdown({
         local plr = Players:FindFirstChild(name)
         if plr then
             selectedTarget = plr
-            Rayfield:Notify({Title = "Locked", Content = name, Duration = 2})
             if _G.KickEnabled then KickPlayer(plr) end
         else
             Rayfield:Notify({Title = "Offline", Content = name, Duration = 2})
@@ -781,6 +755,7 @@ TabCombat:CreateButton({
     end,
 })
 
+-- === KICK ===
 TabCombat:CreateSection("Kick")
 
 TabCombat:CreateToggle({
@@ -801,6 +776,7 @@ TabCombat:CreateToggle({
     end,
 })
 
+-- === BIND ===
 TabCombat:CreateSection("Bind")
 
 local bindLabel = TabCombat:CreateLabel("Select bind: X")
@@ -810,28 +786,26 @@ TabCombat:CreateButton({
     Callback = function()
         Rayfield:Notify({Title = "Press any key...", Content = "", Duration = 3})
         local waiting = true
-        local c
-        c = UIS.InputBegan:Connect(function(input, gpe)
+        local conn
+        conn = UIS.InputBegan:Connect(function(input, gpe)
             if gpe then return end
             if input.KeyCode ~= Enum.KeyCode.Unknown then
                 selectBind = input.KeyCode
                 pcall(function() bindLabel:Set("Select bind: " .. selectBind.Name) end)
-                Rayfield:Notify({Title = "Bind", Content = selectBind.Name, Duration = 2})
                 waiting = false
-                c:Disconnect()
+                conn:Disconnect()
             end
         end)
         task.delay(5, function()
-            if waiting then pcall(function() c:Disconnect() end) end
+            if waiting then pcall(function() conn:Disconnect() end) end
         end)
     end,
 })
 
--- бинд ввода
+-- основной обработчик ввода
 UIS.InputBegan:Connect(function(input, gpe)
     if gpe then return end
 
-    -- T = TP к курсору
     if input.KeyCode == Enum.KeyCode.T then
         pcall(function()
             local hrp = getHRP(LP)
@@ -839,7 +813,6 @@ UIS.InputBegan:Connect(function(input, gpe)
         end)
     end
 
-    -- бинд выбора цели
     if input.KeyCode == selectBind then
         pcall(function()
             local model = Mouse.Target and Mouse.Target:FindFirstAncestorOfClass("Model")
@@ -955,25 +928,28 @@ TabVisual:CreateToggle({
     Callback = function(v) _G.PacketMonitor = v end,
 })
 
+local simRadiusOn = false
 TabVisual:CreateToggle({
     Name = "PCLD SimRadius",
     CurrentValue = false,
     Callback = function(v)
-        if v then
-            task.spawn(function()
-                while v do
-                    pcall(function()
-                        LP.SimulationRadius = math.huge
-                        LP.MaximumSimulationRadius = math.huge
-                        settings().Physics.AllowSleep = false
-                    end)
-                    if selectedTarget then
-                        local hrp = getHRP(selectedTarget)
-                        if hrp then fireOwner(hrp, hrp.CFrame) end
-                    end
-                    task.wait(0.5)
-                end
-            end)
-        end
+        simRadiusOn = v
     end,
 })
+
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if simRadiusOn then
+            pcall(function()
+                LP.SimulationRadius = math.huge
+                LP.MaximumSimulationRadius = math.huge
+                settings().Physics.AllowSleep = false
+            end)
+            if selectedTarget then
+                local hrp = getHRP(selectedTarget)
+                if hrp then fireOwner(hrp, hrp.CFrame) end
+            end
+        end
+    end
+end)
