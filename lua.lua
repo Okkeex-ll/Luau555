@@ -198,13 +198,6 @@ end
 -- ============================================================
 -- KICK (с BodyMovers + ownership — как работало раньше)
 -- ============================================================
-local function StopKick()
-    if _G.StopKickFunc then
-        pcall(function() _G.StopKickFunc() end)
-        _G.StopKickFunc = nil
-    end
-end
-
 local function KickPlayer(target)
     if not target then return end
     StopKick()
@@ -212,9 +205,7 @@ local function KickPlayer(target)
 
     local active = true
     local conns = {}
-    local lastGrab = 0
 
-    -- берём ownership над ВСЕМИ частями персонажа, не только HRP
     local function claimFullBody(char)
         if not char then return end
         for _, part in pairs(char:GetChildren()) do
@@ -225,7 +216,6 @@ local function KickPlayer(target)
         end
     end
 
-    -- оружие
     local function removeWeapons()
         pcall(function()
             if not target or not target.Parent then return end
@@ -252,7 +242,7 @@ local function KickPlayer(target)
         conns = {}
     end
 
-    -- ПОТОК 1: Heartbeat — ownership + серверное перемещение каждый кадр
+    -- ПОТОК 1: Heartbeat — ownership + CFrame каждый кадр
     local hb = RunService.Heartbeat:Connect(function()
         if not active then return end
         pcall(function()
@@ -264,16 +254,11 @@ local function KickPlayer(target)
             local mHRP = getHRP(LP)
             if not mHRP then return end
 
-            -- ownership на HRP каждый кадр
             fireOwner(tHRP, tHRP.CFrame)
             fireDestroy(tHRP)
 
-            -- серверное перемещение: мы владелец, значит наш CFrame авторитетен
-            -- ставим цель туда куда хотим — сервер примет
             local targetPos = mHRP.Position + Vector3.new(0, 15, 0)
             tHRP.CFrame = CFrame.new(targetPos)
-
-            -- убиваем всю физику чтоб не дёргалось
             tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
             tHRP.Velocity = Vector3.new(0, 0, 0)
@@ -282,8 +267,7 @@ local function KickPlayer(target)
     end)
     table.insert(conns, hb)
 
-    -- ПОТОК 2: full body ownership каждые 0.1 сек
-    -- берём ownership не только HRP, а ВСЕХ частей — сервер не сможет вернуть контроль
+    -- ПОТОК 2: full body ownership
     task.spawn(function()
         while active do
             pcall(function()
@@ -295,7 +279,7 @@ local function KickPlayer(target)
         end
     end)
 
-    -- ПОТОК 3: доп спам ownership на HRP (быстрый)
+    -- ПОТОК 3: быстрый HRP спам
     task.spawn(function()
         while active do
             pcall(function()
@@ -310,7 +294,8 @@ local function KickPlayer(target)
         end
     end)
 
-    -- ПОТОК 4: TP перехват + оружие
+    -- ПОТОК 4: ПРИНУДИТЕЛЬНЫЙ TP каждые 2 сек — обновляет ownership
+    -- это главное что не даёт серверу забрать ownership обратно
     task.spawn(function()
         while active do
             pcall(function()
@@ -319,44 +304,42 @@ local function KickPlayer(target)
                 local mHRP = getHRP(LP)
                 if not tHRP or not mHRP then return end
 
-                removeWeapons()
+                local oldCF = mHRP.CFrame
+                mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
 
-                -- если далеко — TP к цели, burst ownership, вернуться
-                local dist = (mHRP.Position - tHRP.Position).Magnitude
-                if dist > REGRAB_DIST and tHRP.Position.Y < 2000 then
-                    local now = tick()
-                    if now - lastGrab > REGRAB_CD then
-                        lastGrab = now
-                        local oldCF = mHRP.CFrame
-                        mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
-
-                        -- burst: full body + HRP
-                        local tChar = target.Character
-                        if tChar then claimFullBody(tChar) end
-                        for _ = 1, REGRAB_BURSTS do
-                            fireOwner(tHRP, tHRP.CFrame)
-                            fireDestroy(tHRP)
-                        end
-
-                        task.wait(REGRAB_WAIT)
-                        pcall(function()
-                            if mHRP and mHRP.Parent then mHRP.CFrame = oldCF end
-                        end)
-                    end
+                -- burst ownership на всё тело
+                local tChar = target.Character
+                if tChar then claimFullBody(tChar) end
+                for _ = 1, 5 do
+                    fireOwner(tHRP, tHRP.CFrame)
+                    fireDestroy(tHRP)
                 end
+
+                task.wait(0.15)
+
+                pcall(function()
+                    if mHRP and mHRP.Parent then mHRP.CFrame = oldCF end
+                end)
             end)
+            task.wait(2) -- каждые 2 секунды принудительно
+        end
+    end)
+
+    -- ПОТОК 5: оружие
+    task.spawn(function()
+        while active do
+            removeWeapons()
             task.wait(WEAPON_INTERVAL)
         end
         cleanup()
     end)
 
-    -- респавн цели — сразу перехватываем
+    -- респавн цели
     local rc = target.CharacterAdded:Connect(function(newChar)
         if not active then return end
         local hrp = newChar:WaitForChild("HumanoidRootPart", 5)
         if not hrp or not active then return end
         task.wait(0.3)
-        -- burst на всё тело
         claimFullBody(newChar)
         for _ = 1, 8 do
             fireOwner(hrp, hrp.CFrame)
@@ -934,5 +917,6 @@ task.spawn(function()
         end
     end
 end)
+
 
 
