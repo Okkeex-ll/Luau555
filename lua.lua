@@ -180,12 +180,22 @@ do
 end
 
 -- ============================================================
--- KICK — StopKick ПЕРЕД KickPlayer
+-- KICK
 -- ============================================================
+-- ============================================================
+-- KICK
+-- ============================================================
+local function StopKick()
+    if _G.StopKickFunc then
+        pcall(function() _G.StopKickFunc() end)
+        _G.StopKickFunc = nil
+    end
+end
+
 local function KickPlayer(target)
     if not target then return end
     StopKick()
-    task.wait(0.05)
+    task.wait(0.01)
 
     local active = true
     local conns = {}
@@ -210,7 +220,6 @@ local function KickPlayer(target)
     end)
     table.insert(conns, rc)
 
-    -- Heartbeat: доп спам ownership каждый кадр
     local hb = RunService.Heartbeat:Connect(function()
         if not active then return end
         if not target or not target.Parent then return end
@@ -225,7 +234,6 @@ local function KickPlayer(target)
     end)
     table.insert(conns, hb)
 
-    -- основной цикл: ownership + freeze + BodyMovers + оружие + TP
     task.spawn(function()
         while active do
             if not target or not target.Parent then break end
@@ -239,7 +247,6 @@ local function KickPlayer(target)
                 local mHRP = myChar:FindFirstChild("HumanoidRootPart")
 
                 if tHRP and mHRP then
-                    -- ownership
                     if tHRP.Position.Y < 2000 then
                         setOwner:FireServer(tHRP, tHRP.CFrame)
                         destroyGrabLine:FireServer(tHRP)
@@ -247,7 +254,6 @@ local function KickPlayer(target)
                         destroyGrabLine:FireServer(tHRP)
                     end
 
-                    -- freeze
                     pcall(function()
                         tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
                         tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
@@ -257,7 +263,6 @@ local function KickPlayer(target)
 
                     if tHum then tHum.PlatformStand = true end
 
-                    -- BodyMovers
                     local bp = tHRP:FindFirstChild("KickBP") or Instance.new("BodyPosition", tHRP)
                     bp.Name = "KickBP"
                     bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
@@ -270,7 +275,6 @@ local function KickPlayer(target)
                     bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
                     bg.CFrame = mHRP.CFrame
 
-                    -- оружие
                     local spawned = WS:FindFirstChild(target.Name .. "SpawnedInToys")
                     if spawned then
                         local function yeet(part)
@@ -285,7 +289,6 @@ local function KickPlayer(target)
                         if spawned:FindFirstChild("NinjaShuriken") then yeet(spawned.NinjaShuriken:FindFirstChild("SoundPart")) end
                     end
 
-                    -- TP если далеко
                     local dist = (mHRP.Position - tHRP.Position).Magnitude
                     if tHRP.Position.Y < 2000 and dist > 25 then
                         local oldCF = mHRP.CFrame
@@ -791,6 +794,7 @@ task.spawn(function()
         end
     end
 end)
+
 
 
 
