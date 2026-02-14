@@ -48,7 +48,7 @@ _G.StopKickFunc = nil
 local savedTargets = {}
 local currentSaved = nil
 local espObjects = {}
-local selectBind = Enum.KeyCode.E
+local selectBind = Enum.KeyCode.X
 
 -- [[ ИВЕНТЫ — безопасная загрузка ]]
 local GE = ReplicatedStorage:WaitForChild("GrabEvents", 10)
@@ -375,22 +375,201 @@ end
 -- =========================================================
 -- [[ PCLD ]]
 -- =========================================================
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        if pcldActive then
-            pcall(function()
-                LocalPlayer.SimulationRadius = math.huge
-                LocalPlayer.MaximumSimulationRadius = math.huge
-                settings().Physics.AllowSleep = false
-            end)
-            if selectedTarget and selectedTarget.Character then
-                local tRoot = selectedTarget.Character:FindFirstChild("HumanoidRootPart")
-                if tRoot then fireSetOwner(tRoot, tRoot.CFrame) end
+-- =========================================================
+-- [[ PCLD ESP ]] — вставить в основной скрипт после Window
+-- =========================================================
+do
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local WS = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+
+    -- настройки
+    local pcldEnabled = false
+    local pcldColor = Color3.fromRGB(255, 0, 0)
+    local pcldTransparency = 0.5
+
+    -- хранилище
+    local pcldConns = {}        -- активные подписки
+    local myPCLD = nil          -- ссылка на свой PCLD (чтоб не подсвечивать)
+    local PCLD_NAME = "PlayerCharacterLocationDetector"
+
+    -- отключить коннект по ключу
+    local function disconn(key)
+        if pcldConns[key] then
+            pcall(function() pcldConns[key]:Disconnect() end)
+            pcldConns[key] = nil
+        end
+    end
+
+    -- отключить все
+    local function disconnAll()
+        for k, _ in pairs(pcldConns) do
+            disconn(k)
+        end
+    end
+
+    -- проверка: это мой PCLD?
+    local function isMyPCLD(part)
+        if myPCLD and myPCLD == part then return true end
+
+        -- если myPCLD ещё не найден, пробуем определить
+        local char = LP.Character
+        if not char then return false end
+        local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
+        if not hrp then return false end
+
+        -- PCLD спавнится примерно на позиции игрока (чуть ниже)
+        local diff = part.Position - (hrp.Position - Vector3.new(0, 0.51, 0))
+        if diff.Magnitude < 1 then
+            myPCLD = part
+            part.Transparency = 1
+            return true
+        end
+
+        return false
+    end
+
+    -- применить стиль к одному PCLD
+    local function applyStyle(part)
+        if not part or not part.Parent then return end
+        if part.Name ~= PCLD_NAME then return end
+
+        pcall(function()
+            if isMyPCLD(part) then
+                part.Transparency = 1
+                return
+            end
+
+            if pcldEnabled then
+                part.Transparency = pcldTransparency
+                part.Color = pcldColor
+            end
+        end)
+    end
+
+    -- применить ко всем существующим
+    local function applyToAll()
+        for _, part in pairs(WS:GetChildren()) do
+            if part.Name == PCLD_NAME and part:IsA("BasePart") then
+                applyStyle(part)
             end
         end
     end
-end)
+
+    -- сбросить все PCLD в невидимые
+    local function resetAll()
+        myPCLD = nil
+        for _, part in pairs(WS:GetChildren()) do
+            pcall(function()
+                if part.Name == PCLD_NAME and part:IsA("BasePart") then
+                    part.Transparency = 1
+                end
+            end)
+        end
+    end
+
+    -- включить PCLD ESP
+    local function enablePCLD()
+        pcldEnabled = true
+        myPCLD = nil
+
+        -- подсветить существующие
+        applyToAll()
+
+        -- новые детали
+        disconn("childAdded")
+        pcldConns["childAdded"] = WS.ChildAdded:Connect(function(part)
+            if not pcldEnabled then return end
+            if part.Name == PCLD_NAME and part:IsA("BasePart") then
+                task.wait(0.1) -- даём серверу обработать позицию
+                applyStyle(part)
+            end
+        end)
+
+        -- периодически перечекивать свой PCLD (он может переспавниться)
+        disconn("heartbeat")
+        pcldConns["heartbeat"] = RunService.Heartbeat:Connect(function()
+            if not pcldEnabled then return end
+
+            -- если myPCLD удалён, сбросить и найти заново
+            if myPCLD and not myPCLD.Parent then
+                myPCLD = nil
+            end
+
+            -- если ещё не нашли свой — ищем
+            if not myPCLD then
+                local char = LP.Character
+                if not char then return end
+                local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
+                if not hrp then return end
+
+                for _, part in pairs(WS:GetChildren()) do
+                    if part.Name == PCLD_NAME and part:IsA("BasePart") then
+                        local diff = part.Position - (hrp.Position - Vector3.new(0, 0.51, 0))
+                        if diff.Magnitude < 1 then
+                            myPCLD = part
+                            part.Transparency = 1
+                            break
+                        end
+                    end
+                end
+            end
+
+            -- свой всегда невидим
+            if myPCLD and myPCLD.Parent then
+                pcall(function() myPCLD.Transparency = 1 end)
+            end
+        end)
+    end
+
+    -- выключить PCLD ESP
+    local function disablePCLD()
+        pcldEnabled = false
+        disconnAll()
+        resetAll()
+    end
+
+    -- ====== GUI ======
+    local TabESP = Window:CreateTab("PCLD ESP", 4483362458)
+    TabESP:CreateSection("PCLD ESP")
+
+    TabESP:CreateToggle({
+        Name = "PCLD ESP",
+        CurrentValue = false,
+        Flag = "PCLDESPToggle",
+        Callback = function(val)
+            if val then
+                enablePCLD()
+            else
+                disablePCLD()
+            end
+        end,
+    })
+
+    TabESP:CreateColorPicker({
+        Name = "PCLD Color",
+        Color = pcldColor,
+        Flag = "PCLDColorPicker",
+        Callback = function(val)
+            pcldColor = val
+            if pcldEnabled then applyToAll() end
+        end,
+    })
+
+    TabESP:CreateSlider({
+        Name = "PCLD Transparency",
+        Range = {0, 1},
+        Increment = 0.05,
+        Suffix = "",
+        CurrentValue = pcldTransparency,
+        Flag = "PCLDTransSlider",
+        Callback = function(val)
+            pcldTransparency = val
+            if pcldEnabled then applyToAll() end
+        end,
+    })
+end
 
 -- =========================================================
 -- [[ NOCLIP ]]
@@ -797,3 +976,4 @@ TabVisual:CreateButton({Name = "Refresh ESP", Callback = function() if espActive
 -- === PHYSICS ===
 TabPhys:CreateToggle({Name = "PCLD", CurrentValue = false, Callback = function(v) pcldActive = v end})
 TabPhys:CreateToggle({Name = "Packet Detector", CurrentValue = false, Callback = function(v) _G.PacketMonitor = v end})
+
