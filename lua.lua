@@ -1,7 +1,7 @@
 -- [[ RAYFIELD ]]
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-    Name = "fife | 0.1",
+    Name = "fife | 0.2",
     LoadingTitle = "Loading...",
     ConfigurationSaving = {
         Enabled = false,
@@ -79,6 +79,13 @@ end
 -- =========================================================
 -- [[ КИК ]]
 -- =========================================================
+local function StopKick()
+    if _G.StopKickFunc then
+        _G.StopKickFunc()
+        _G.StopKickFunc = nil
+    end
+end
+
 local function KickPlayer(targetPlayer)
     if not targetPlayer then return end
     StopKick()
@@ -93,7 +100,7 @@ local function KickPlayer(targetPlayer)
     end)
     table.insert(connections, respawnConn)
 
-    -- Heartbeat: каждый кадр setOwner + destroyGrabLine + локальная физика
+    -- === ПОТОК 1: Heartbeat — ownership спам + физика + BodyMovers ===
     local heartbeatConn = RunService.Heartbeat:Connect(function()
         if not kickActive then return end
         if not targetPlayer or not targetPlayer.Parent then return end
@@ -109,13 +116,13 @@ local function KickPlayer(targetPlayer)
         local mHRP = myChar:FindFirstChild("HumanoidRootPart")
         if not mHRP then return end
 
-        -- === СЕРВЕР: каждый кадр оба вызова ===
+        -- Серверный спам — ownership каждый кадр
         if tHRP.Position.Y < 2000 then
-            if setOwner then setOwner:FireServer(tHRP, tHRP.CFrame) end
-            if destroyGrabLine then destroyGrabLine:FireServer(tHRP) end
+            setOwner:FireServer(tHRP, tHRP.CFrame)
+            destroyGrabLine:FireServer(tHRP)
         end
 
-        -- === ЛОКАЛЬНО: убиваем физику ===
+        -- Локально — убиваем физику
         pcall(function()
             tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
@@ -127,7 +134,7 @@ local function KickPlayer(targetPlayer)
             tHum.PlatformStand = true
         end
 
-        -- === BodyMovers: держим над собой ===
+        -- BodyPosition — держим над собой
         local holdPos = mHRP.Position + Vector3.new(0, 15, 0)
 
         local bp = tHRP:FindFirstChild("KickBP")
@@ -135,8 +142,8 @@ local function KickPlayer(targetPlayer)
             bp = Instance.new("BodyPosition")
             bp.Name = "KickBP"
             bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-            bp.D = 400
-            bp.P = 50000
+            bp.D = 50
+            bp.P = 500000
             bp.Parent = tHRP
         end
         bp.Position = holdPos
@@ -146,14 +153,30 @@ local function KickPlayer(targetPlayer)
             bg = Instance.new("BodyGyro")
             bg.Name = "KickBG"
             bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-            bg.D = 200
+            bg.D = 100
             bg.Parent = tHRP
         end
         bg.CFrame = mHRP.CFrame
     end)
     table.insert(connections, heartbeatConn)
 
-    -- Отдельный поток: TP-перехват если далеко + оружие
+    -- === ПОТОК 2: доп спам чуть реже ===
+    task.spawn(function()
+        while kickActive do
+            if not targetPlayer or not targetPlayer.Parent then break end
+            local tChar = targetPlayer.Character
+            if tChar then
+                local tHRP = tChar:FindFirstChild("HumanoidRootPart")
+                if tHRP and tHRP.Position.Y < 2000 then
+                    setOwner:FireServer(tHRP, tHRP.CFrame)
+                    destroyGrabLine:FireServer(tHRP)
+                end
+            end
+            task.wait(0.05)
+        end
+    end)
+
+    -- === ПОТОК 3: TP-перехват + оружие ===
     task.spawn(function()
         while kickActive do
             if not targetPlayer or not targetPlayer.Parent then break end
@@ -165,7 +188,7 @@ local function KickPlayer(targetPlayer)
                 local mHRP = myChar:FindFirstChild("HumanoidRootPart")
                 if tHRP and mHRP then
 
-                    -- Убираем оружие
+                    -- Оружие
                     local spawned = Workspace:FindFirstChild(targetPlayer.Name .. "SpawnedInToys")
                     if spawned then
                         local function yeet(part)
@@ -189,7 +212,7 @@ local function KickPlayer(targetPlayer)
                             local oldCF = mHRP.CFrame
                             mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
 
-                            for _ = 1, 3 do
+                            for _ = 1, 5 do
                                 setOwner:FireServer(tHRP, tHRP.CFrame)
                                 destroyGrabLine:FireServer(tHRP)
                             end
@@ -561,7 +584,7 @@ TabCombat:CreateButton({
 
 TabCombat:CreateParagraph({
     Title = "How it works",
-    Content = "Every frame: velocity lock + BodyPosition + CFrame lock\nServer: 1 call/frame alternating (no ping spike)\nIf target escapes: auto TP re-grab",
+    Content = "Heartbeat: ownership + velocity lock + BodyPosition\nThread 2: extra ownership spam\nThread 3: TP re-grab if far + weapon remove\nBodyPosition: D=50 P=500000 (instant snap)",
 })
 
 TabMove:CreateSection("Teleport")
@@ -586,4 +609,3 @@ TabVisual:CreateButton({Name = "Refresh ESP", Callback = function() if espActive
 
 TabPhys:CreateToggle({Name = "PCLD", CurrentValue = false, Callback = function(v) pcldActive = v end})
 TabPhys:CreateToggle({Name = "Packet Detector", CurrentValue = false, Callback = function(v) _G.PacketMonitor = v end})
-
