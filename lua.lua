@@ -201,138 +201,99 @@ local function KickPlayer(target)
         active = false
         for _, c in pairs(conns) do pcall(function() c:Disconnect() end) end
         conns = {}
-        pcall(function()
-            if target and target.Character then
-                local r = target.Character:FindFirstChild("HumanoidRootPart")
-                if r then
-                    if r:FindFirstChild("KickBP") then r.KickBP:Destroy() end
-                    if r:FindFirstChild("KickBG") then r.KickBG:Destroy() end
-                end
-                local h = target.Character:FindFirstChild("Humanoid")
-                if h then h.PlatformStand = false end
+        if target and target.Character then
+            local r = target.Character:FindFirstChild("HumanoidRootPart")
+            if r then
+                if r:FindFirstChild("KickBP") then r.KickBP:Destroy() end
+                if r:FindFirstChild("KickBG") then r.KickBG:Destroy() end
             end
-        end)
+            local h = target.Character:FindFirstChild("Humanoid")
+            if h then h.PlatformStand = false end
+        end
     end
 
-    -- Heartbeat: ownership + BodyMovers + freeze
-    local hb = RunService.Heartbeat:Connect(function()
-        if not active then return end
-        pcall(function()
-            if not target or not target.Parent then return end
-            local tChar = target.Character
-            if not tChar then return end
-            local tHRP = tChar:FindFirstChild("HumanoidRootPart")
-            local tHum = tChar:FindFirstChild("Humanoid")
-            if not tHRP then return end
-            local mHRP = getHRP(LP)
-            if not mHRP then return end
-
-            -- ownership каждый кадр (2 вызова — нормально)
-            fireOwner(tHRP, tHRP.CFrame)
-            fireDestroy(tHRP)
-
-            -- freeze
-            tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-            tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-            tHRP.Velocity = Vector3.new(0, 0, 0)
-            tHRP.RotVelocity = Vector3.new(0, 0, 0)
-
-            if tHum then tHum.PlatformStand = true end
-
-            -- BodyMovers
-            local holdPos = mHRP.Position + Vector3.new(0, 15, 0)
-
-            local bp = tHRP:FindFirstChild("KickBP")
-            if not bp then
-                bp = Instance.new("BodyPosition")
-                bp.Name = "KickBP"
-                bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-                bp.D = 10
-                bp.P = math.huge
-                bp.Parent = tHRP
-            end
-            bp.Position = holdPos
-
-            local bg = tHRP:FindFirstChild("KickBG")
-            if not bg then
-                bg = Instance.new("BodyGyro")
-                bg.Name = "KickBG"
-                bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-                bg.D = 50
-                bg.Parent = tHRP
-            end
-            bg.CFrame = mHRP.CFrame
-        end)
-    end)
-    table.insert(conns, hb)
-
-    -- 1 поток: оружие + TP если далеко
-    task.spawn(function()
-        local lastGrab = 0
-        while active do
-            pcall(function()
-                if not target or not target.Parent then return end
-                local tHRP = getHRP(target)
-                local mHRP = getHRP(LP)
-                if not tHRP or not mHRP then return end
-
-                -- оружие
-                local spawned = WS:FindFirstChild(target.Name .. "SpawnedInToys")
-                if spawned then
-                    local function yeet(cont, pn)
-                        local c = spawned:FindFirstChild(cont)
-                        if not c then return end
-                        local p = c:FindFirstChild(pn)
-                        if not p then return end
-                        fireOwner(p, p.CFrame)
-                        if p:FindFirstChild("PartOwner") and p.PartOwner.Value == LP.Name then
-                            p.CFrame = CFrame.new(0, 10000, 0)
-                        end
-                    end
-                    yeet("NinjaKunai", "SoundPart")
-                    yeet("NinjaShuriken", "SoundPart")
-                end
-
-                -- TP если далеко
-                local dist = (mHRP.Position - tHRP.Position).Magnitude
-                if dist > 30 and tHRP.Position.Y < 2000 then
-                    local now = tick()
-                    if now - lastGrab > 0.7 then
-                        lastGrab = now
-                        local oldCF = mHRP.CFrame
-                        mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
-                        for _ = 1, 3 do
-                            fireOwner(tHRP, tHRP.CFrame)
-                            fireDestroy(tHRP)
-                        end
-                        task.wait(0.2)
-                        pcall(function()
-                            if mHRP and mHRP.Parent then mHRP.CFrame = oldCF end
-                        end)
-                    end
-                end
-            end)
-            task.wait(0.15)
-        end
-        cleanup()
-    end)
-
-    -- респавн цели
-    local rc = target.CharacterAdded:Connect(function(newChar)
-        if not active then return end
-        local hrp = newChar:WaitForChild("HumanoidRootPart", 5)
-        if not hrp or not active then return end
-        task.wait(0.5)
-        for _ = 1, 5 do
-            fireOwner(hrp, hrp.CFrame)
-            fireDestroy(hrp)
-            task.wait(0.1)
-        end
+    local rc = target.CharacterAdded:Connect(function()
+        task.wait(1.5)
     end)
     table.insert(conns, rc)
 
-    local mc = LP.CharacterAdded:Connect(function() task.wait(1) end)
-    table.insert(conns, mc)
+    task.spawn(function()
+        while active do
+            if not target or not target.Parent then break end
+
+            local targetChar = target.Character
+            local myChar = LP.Character
+
+            if targetChar and myChar then
+                local tHRP = targetChar:FindFirstChild("HumanoidRootPart")
+                local tHum = targetChar:FindFirstChild("Humanoid")
+                local mHRP = myChar:FindFirstChild("HumanoidRootPart")
+
+                if tHRP and mHRP then
+                    -- ownership
+                    if tHRP.Position.Y < 2000 then
+                        setOwner:FireServer(tHRP, tHRP.CFrame)
+                        destroyGrabLine:FireServer(tHRP)
+                    end
+
+                    -- freeze
+                    pcall(function()
+                        tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                        tHRP.Velocity = Vector3.new(0, 0, 0)
+                        tHRP.RotVelocity = Vector3.new(0, 0, 0)
+                    end)
+
+                    if tHum then tHum.PlatformStand = true end
+
+                    -- BodyMovers
+                    local bp = tHRP:FindFirstChild("KickBP") or Instance.new("BodyPosition", tHRP)
+                    bp.Name = "KickBP"
+                    bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                    bp.D = 200
+                    bp.P = 20000
+                    bp.Position = mHRP.Position + Vector3.new(0, 15, 0)
+
+                    local bg = tHRP:FindFirstChild("KickBG") or Instance.new("BodyGyro", tHRP)
+                    bg.Name = "KickBG"
+                    bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                    bg.CFrame = mHRP.CFrame
+
+                    -- оружие
+                    local spawned = WS:FindFirstChild(target.Name .. "SpawnedInToys")
+                    if spawned then
+                        local function yeet(part)
+                            if part then
+                                setOwner:FireServer(part, part.CFrame)
+                                if part:FindFirstChild("PartOwner") and part.PartOwner.Value == LP.Name then
+                                    part.CFrame = CFrame.new(0, 10000, 0)
+                                end
+                            end
+                        end
+                        if spawned:FindFirstChild("NinjaKunai") then yeet(spawned.NinjaKunai:FindFirstChild("SoundPart")) end
+                        if spawned:FindFirstChild("NinjaShuriken") then yeet(spawned.NinjaShuriken:FindFirstChild("SoundPart")) end
+                    end
+
+                    -- TP если далеко
+                    local dist = (mHRP.Position - tHRP.Position).Magnitude
+                    if tHRP.Position.Y < 2000 and dist > 25 then
+                        local oldCF = mHRP.CFrame
+                        mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 5)
+                        setOwner:FireServer(tHRP, tHRP.CFrame)
+                        destroyGrabLine:FireServer(tHRP)
+                        setOwner:FireServer(tHRP, tHRP.CFrame)
+                        destroyGrabLine:FireServer(tHRP)
+                        task.wait(0.15)
+                        if myChar and mHRP and mHRP.Parent then
+                            mHRP.CFrame = oldCF
+                        end
+                    end
+                end
+            end
+            task.wait(0.05)
+        end
+        cleanup()
+    end)
 
     _G.StopKickFunc = function() cleanup() end
 end
@@ -819,4 +780,5 @@ task.spawn(function()
         end
     end
 end)
+
 
