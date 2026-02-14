@@ -4,7 +4,7 @@
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-    Name = "fife | 1.1",
+    Name = "fife | 1.1 | Kick Upgrade",
     LoadingTitle = "fife",
     LoadingSubtitle = "loading...",
     ConfigurationSaving = { Enabled = false, FileName = "fife11" },
@@ -934,4 +934,5 @@ task.spawn(function()
         end
     end
 end)
+
 
