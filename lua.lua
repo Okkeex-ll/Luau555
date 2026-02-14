@@ -236,13 +236,54 @@ local function KickPlayer(target)
         end)
     end
 
+    local function ensureBM(tHRP, holdPos, lookCF)
+        if not tHRP or not tHRP.Parent then return end
+
+        local bp = tHRP:FindFirstChild("KickBP")
+        if not bp then
+            bp = Instance.new("BodyPosition")
+            bp.Name = "KickBP"
+            bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            bp.D = KICK_BP_D
+            bp.P = KICK_BP_P
+            bp.Parent = tHRP
+        end
+        bp.Position = holdPos
+
+        local bg = tHRP:FindFirstChild("KickBG")
+        if not bg then
+            bg = Instance.new("BodyGyro")
+            bg.Name = "KickBG"
+            bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+            bg.D = KICK_BG_D
+            bg.Parent = tHRP
+        end
+        bg.CFrame = lookCF
+    end
+
+    local function cleanBM(hrp)
+        if not hrp then return end
+        pcall(function()
+            if hrp:FindFirstChild("KickBP") then hrp.KickBP:Destroy() end
+            if hrp:FindFirstChild("KickBG") then hrp.KickBG:Destroy() end
+        end)
+    end
+
     local function cleanup()
         active = false
         for _, c in pairs(conns) do pcall(function() c:Disconnect() end) end
         conns = {}
+        pcall(function()
+            if target and target.Character then
+                local r = target.Character:FindFirstChild("HumanoidRootPart")
+                cleanBM(r)
+                local h = target.Character:FindFirstChild("Humanoid")
+                if h then h.PlatformStand = false end
+            end
+        end)
     end
 
-    -- ПОТОК 1: Heartbeat — ownership + CFrame каждый кадр
+    -- ПОТОК 1: Heartbeat — ownership + BodyMovers + freeze каждый кадр
     local hb = RunService.Heartbeat:Connect(function()
         if not active then return end
         pcall(function()
@@ -250,24 +291,31 @@ local function KickPlayer(target)
             local tChar = target.Character
             if not tChar then return end
             local tHRP = tChar:FindFirstChild("HumanoidRootPart")
+            local tHum = tChar:FindFirstChild("Humanoid")
             if not tHRP then return end
             local mHRP = getHRP(LP)
             if not mHRP then return end
 
+            -- ownership
             fireOwner(tHRP, tHRP.CFrame)
             fireDestroy(tHRP)
 
-            local targetPos = mHRP.Position + Vector3.new(0, 15, 0)
-            tHRP.CFrame = CFrame.new(targetPos)
+            -- freeze
             tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
             tHRP.Velocity = Vector3.new(0, 0, 0)
             tHRP.RotVelocity = Vector3.new(0, 0, 0)
+
+            if tHum then tHum.PlatformStand = true end
+
+            -- BodyMovers — создаёт если нет, обновляет позицию
+            local holdPos = mHRP.Position + KICK_HOLD_OFFSET
+            ensureBM(tHRP, holdPos, mHRP.CFrame)
         end)
     end)
     table.insert(conns, hb)
 
-    -- ПОТОК 2: full body ownership
+    -- ПОТОК 2: full body ownership каждые 0.1с
     task.spawn(function()
         while active do
             pcall(function()
@@ -294,8 +342,7 @@ local function KickPlayer(target)
         end
     end)
 
-    -- ПОТОК 4: ПРИНУДИТЕЛЬНЫЙ TP каждые 2 сек — обновляет ownership
-    -- это главное что не даёт серверу забрать ownership обратно
+    -- ПОТОК 4: принудительный TP каждые 2 сек для обновления ownership
     task.spawn(function()
         while active do
             pcall(function()
@@ -307,7 +354,6 @@ local function KickPlayer(target)
                 local oldCF = mHRP.CFrame
                 mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
 
-                -- burst ownership на всё тело
                 local tChar = target.Character
                 if tChar then claimFullBody(tChar) end
                 for _ = 1, 5 do
@@ -316,12 +362,11 @@ local function KickPlayer(target)
                 end
 
                 task.wait(0.15)
-
                 pcall(function()
                     if mHRP and mHRP.Parent then mHRP.CFrame = oldCF end
                 end)
             end)
-            task.wait(2) -- каждые 2 секунды принудительно
+            task.wait(2)
         end
     end)
 
@@ -917,6 +962,7 @@ task.spawn(function()
         end
     end
 end)
+
 
 
 
