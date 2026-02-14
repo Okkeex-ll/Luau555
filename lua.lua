@@ -1,191 +1,251 @@
--- ============================================================
--- fife | 1.3 — улучшенный KickPlayer
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+-- fife | 2.0
+-- ═══════════════════════════════════════════════════════════════
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-    Name = "fife | 1.3",
-    LoadingTitle = "fife",
+    Name            = "fife | 2.0",
+    LoadingTitle    = "fife",
     LoadingSubtitle = "loading...",
-    ConfigurationSaving = { Enabled = false, FileName = "fife13" },
-    KeySystem = false,
+    ConfigurationSaving = { Enabled = false, FileName = "fife20" },
+    KeySystem       = false,
 })
+
+-- ═══════════════════════════════════════════════════════════════
+-- SERVICES
+-- ═══════════════════════════════════════════════════════════════
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local RepStorage = game:GetService("ReplicatedStorage")
-local WS         = game:GetService("Workspace")
+local Workspace  = game:GetService("Workspace")
 local UIS        = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
 local Stats      = game:GetService("Stats")
+local CoreGui    = game:GetService("CoreGui")
 
 local LP    = Players.LocalPlayer
 local Mouse = LP:GetMouse()
 
--- ============================================================
--- GrabEvents
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+-- CONFIG — все числа в одном месте
+-- ═══════════════════════════════════════════════════════════════
+
+local CFG = {
+    KICK = {
+        -- BodyPosition
+        BP_POWER      = 30000,    -- жёсткость притяжения
+        BP_DAMP       = 200,      -- демпфирование (плавность)
+        BP_OFFSET_Y   = 5,        -- высота над LP (стадов)
+
+        -- BodyGyro
+        BG_POWER      = 15000,
+        BG_DAMP       = 150,
+
+        -- Сетевой спам
+        HEAVY_EVERY   = 4,        -- extend + extra parts каждые N кадров
+        TOY_INTERVAL  = 0.3,      -- проверка игрушек (сек)
+
+        -- TP-перехват
+        TP_DIST       = 40,       -- порог дистанции (стадов)
+        TP_COOLDOWN   = 0.5,      -- кулдаун между TP (сек)
+        TP_BURST      = 3,        -- burst-вызовов при TP
+        TP_LINGER     = 0.12,     -- пауза у цели перед возвратом
+        TP_OFFSET     = 4,        -- отступ от цели при TP
+        TP_INTERVAL   = 0.1,      -- интервал проверки TP
+
+        -- Респавн
+        RESPAWN_DELAY = 1.2,      -- ожидание после респавна цели
+        RESPAWN_BURST = 5,        -- burst при респавне
+
+        -- Лимиты
+        Y_LIMIT       = 2000,     -- выше этого — не трогаем (уже улетел)
+    },
+
+    -- Имена BodyMover-инстансов (уникальные, не палевные)
+    TAG_BP = "__fBP",
+    TAG_BG = "__fBG",
+}
+
+-- ═══════════════════════════════════════════════════════════════
+-- REMOTES
+-- ═══════════════════════════════════════════════════════════════
+
 local GE = RepStorage:WaitForChild("GrabEvents", 10)
 if not GE then
-    Rayfield:Notify({Title = "Error", Content = "GrabEvents not found", Duration = 5})
+    Rayfield:Notify({Title = "Error", Content = "GrabEvents folder not found", Duration = 5})
 end
 
-local destroyGrabLine = GE and GE:WaitForChild("DestroyGrabLine", 5)
-local setOwner        = GE and GE:WaitForChild("SetNetworkOwner", 5)
-local extendLine      = GE and GE:FindFirstChild("ExtendGrabLine")
-local createLine      = GE and GE:FindFirstChild("CreateGrabLine")
+local remotes = {
+    setOwner   = GE and GE:WaitForChild("SetNetworkOwner", 5),
+    destroy    = GE and GE:WaitForChild("DestroyGrabLine", 5),
+    extend     = GE and GE:FindFirstChild("ExtendGrabLine"),
+    create     = GE and GE:FindFirstChild("CreateGrabLine"),
+}
 
--- Безопасные обёртки для Remote-вызовов
+-- Безопасные обёртки — каждая проверяет remote и part перед вызовом
 local function fireOwner(part, cf)
-    if setOwner and part and part.Parent then
-        pcall(function() setOwner:FireServer(part, cf) end)
+    if remotes.setOwner and part and part.Parent then
+        pcall(remotes.setOwner.FireServer, remotes.setOwner, part, cf)
     end
 end
 
 local function fireDestroy(part)
-    if destroyGrabLine and part and part.Parent then
-        pcall(function() destroyGrabLine:FireServer(part) end)
+    if remotes.destroy and part and part.Parent then
+        pcall(remotes.destroy.FireServer, remotes.destroy, part)
     end
 end
 
 local function fireExtend(part, cf)
-    if extendLine and part and part.Parent then
-        pcall(function() extendLine:FireServer(part, cf) end)
+    if remotes.extend and part and part.Parent then
+        pcall(remotes.extend.FireServer, remotes.extend, part, cf)
     end
 end
 
 local function fireCreate(part, cf)
-    if createLine and part and part.Parent then
-        pcall(function() createLine:FireServer(part, cf) end)
+    if remotes.create and part and part.Parent then
+        pcall(remotes.create.FireServer, remotes.create, part, cf)
     end
 end
 
--- ============================================================
--- Утилиты
--- ============================================================
-local function sysChat(text, color)
-    pcall(function()
-        StarterGui:SetCore("ChatMakeSystemMessage", {
-            Text  = "[fife]: " .. text,
-            Color = color or Color3.fromRGB(255, 80, 80),
-            Font  = Enum.Font.GothamBold,
-            FontSize = Enum.FontSize.Size18,
-        })
-    end)
+-- ═══════════════════════════════════════════════════════════════
+-- HELPERS
+-- ═══════════════════════════════════════════════════════════════
+
+local function getCharacter(player)
+    return player and player.Character
 end
 
 local function getHRP(player)
-    local c = player and player.Character
-    return c and c:FindFirstChild("HumanoidRootPart")
+    local char = getCharacter(player)
+    return char and char:FindFirstChild("HumanoidRootPart")
 end
 
-local function getHum(player)
-    local c = player and player.Character
-    return c and c:FindFirstChild("Humanoid")
+local function getHumanoid(player)
+    local char = getCharacter(player)
+    return char and char:FindFirstChildOfClass("Humanoid")
 end
 
--- ============================================================
--- Переменные
--- ============================================================
-local selectedTarget = nil
-local savedTargets   = {}
-local currentSaved   = nil
+local function isAlive(player)
+    local hrp = getHRP(player)
+    local hum = getHumanoid(player)
+    return hrp and hum and hum.Health > 0
+end
 
-_G.KickEnabled   = false
-_G.StopKickFunc  = nil
+local function sysChat(text, color)
+    pcall(StarterGui.SetCore, StarterGui, "ChatMakeSystemMessage", {
+        Text     = "[fife] " .. text,
+        Color    = color or Color3.fromRGB(255, 80, 80),
+        Font     = Enum.Font.GothamBold,
+        FontSize = Enum.FontSize.Size18,
+    })
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- STATE
+-- ═══════════════════════════════════════════════════════════════
+
+local state = {
+    target       = nil,       -- текущая цель (Player)
+    saved        = {},        -- сохранённые ники
+    currentSaved = nil,       -- выбранный из saved
+
+    kickEnabled  = false,
+    espEnabled   = false,
+    espColor     = Color3.fromRGB(0, 170, 255),
+
+    pcldOn       = false,
+    pcldColor    = Color3.fromRGB(255, 0, 0),
+    pcldTrans    = 0.5,
+
+    noclipOn     = false,
+    loopTP       = false,
+    walkSpeed    = 16,
+    jumpPower    = 50,
+    selectBind   = Enum.KeyCode.X,
+    packetMon    = false,
+    simRadius    = false,
+}
+
+-- Обратная совместимость с внешними проверками
+_G.KickEnabled  = false
+_G.StopKickFunc = nil
 _G.PacketMonitor = false
 
-local espEnabled  = false
-local espColor    = Color3.fromRGB(0, 170, 255)
-local espObjects  = {}
-
-local pcldOn      = false
-local pcldColor   = Color3.fromRGB(255, 0, 0)
-local pcldTrans   = 0.5
-local trackedPCLD = nil
-local pcldConns   = {}
-
-local noclipOn    = false
-local noclipConn  = nil
-local noclipParts = {}
-
-local loopTPOn    = false
-local customSpeed = 16
-local customJump  = 50
-local selectBind  = Enum.KeyCode.X
-
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
 -- HUD
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+
 do
-    local old = game:GetService("CoreGui"):FindFirstChild("fifeHUD")
+    local old = CoreGui:FindFirstChild("fifeHUD")
     if old then old:Destroy() end
 
-    local hud = Instance.new("ScreenGui")
-    hud.Name = "fifeHUD"
-    hud.ResetOnSpawn = false
-    hud.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    hud.IgnoreGuiInset = true
+    local gui = Instance.new("ScreenGui")
+    gui.Name            = "fifeHUD"
+    gui.ResetOnSpawn    = false
+    gui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+    gui.IgnoreGuiInset  = true
 
     local bar = Instance.new("Frame")
-    bar.Size = UDim2.new(0, 520, 0, 36)
-    bar.Position = UDim2.new(0.5, -260, 0, 6)
-    bar.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    bar.Size                  = UDim2.new(0, 520, 0, 36)
+    bar.Position              = UDim2.new(0.5, -260, 0, 6)
+    bar.BackgroundColor3      = Color3.fromRGB(18, 18, 22)
     bar.BackgroundTransparency = 0.15
-    bar.BorderSizePixel = 0
-    bar.Parent = hud
+    bar.BorderSizePixel       = 0
+    bar.Parent                = gui
 
     Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 18)
 
-    local st = Instance.new("UIStroke")
-    st.Color = Color3.fromRGB(80, 80, 120)
-    st.Thickness = 1.5
-    st.Transparency = 0.5
-    st.Parent = bar
+    local stroke = Instance.new("UIStroke")
+    stroke.Color        = Color3.fromRGB(80, 80, 120)
+    stroke.Thickness    = 1.5
+    stroke.Transparency = 0.5
+    stroke.Parent       = bar
 
-    local lay = Instance.new("UIListLayout")
-    lay.FillDirection = Enum.FillDirection.Horizontal
-    lay.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    lay.VerticalAlignment = Enum.VerticalAlignment.Center
-    lay.Padding = UDim.new(0, 20)
-    lay.Parent = bar
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection        = Enum.FillDirection.Horizontal
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.VerticalAlignment   = Enum.VerticalAlignment.Center
+    layout.Padding             = UDim.new(0, 20)
+    layout.Parent              = bar
 
-    local function makeLabel(text, col)
+    local function label(text, col)
         local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(0, 110, 0, 20)
+        lbl.Size                 = UDim2.new(0, 110, 0, 20)
         lbl.BackgroundTransparency = 1
-        lbl.Font = Enum.Font.GothamBold
-        lbl.TextSize = 12
-        lbl.TextColor3 = col or Color3.fromRGB(200, 200, 210)
-        lbl.Text = text
-        lbl.Parent = bar
+        lbl.Font                 = Enum.Font.GothamBold
+        lbl.TextSize             = 12
+        lbl.TextColor3           = col or Color3.fromRGB(200, 200, 210)
+        lbl.Text                 = text
+        lbl.Parent               = bar
         return lbl
     end
 
-    local lblNick    = makeLabel(LP.Name, Color3.fromRGB(130, 180, 255))
-    local lblFPS     = makeLabel("FPS: --")
-    local lblPing    = makeLabel("Ping: --")
-    local lblPlayers = makeLabel("0 online")
+    local lblName    = label(LP.Name, Color3.fromRGB(130, 180, 255))
+    local lblFPS     = label("FPS: --")
+    local lblPing    = label("Ping: --")
+    local lblPlayers = label("0 online")
 
-    hud.Parent = game:GetService("CoreGui")
+    gui.Parent = CoreGui
 
-    local fc, lf = 0, tick()
+    -- FPS через Heartbeat
+    local frames, lastTick = 0, tick()
     RunService.Heartbeat:Connect(function()
-        fc = fc + 1
-        local n = tick()
-        if n - lf >= 0.4 then
-            lblFPS.Text = "FPS: " .. math.floor(fc / (n - lf))
-            fc = 0
-            lf = n
+        frames += 1
+        local now = tick()
+        if now - lastTick >= 0.4 then
+            lblFPS.Text = "FPS: " .. math.floor(frames / (now - lastTick))
+            frames = 0
+            lastTick = now
         end
     end)
 
+    -- Ping + online — медленный цикл
     task.spawn(function()
         while true do
             pcall(function()
-                lblPing.Text = "Ping: " .. math.floor(
-                    Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-                ) .. "ms"
+                local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+                lblPing.Text = "Ping: " .. math.floor(ping) .. "ms"
             end)
             lblPlayers.Text = #Players:GetPlayers() .. " online"
             task.wait(0.5)
@@ -193,295 +253,364 @@ do
     end)
 end
 
--- ============================================================
--- KICK — v2 (полностью переработанный)
--- ============================================================
---[[
-    Архитектура:
-    • Один Heartbeat-коннект: овнершип + destroy + extend + velocity-контроль + SimRadius
-    • Один task.spawn: TP-перехват с кулдауном + обработка игрушек (throttled)
-    • CharacterAdded: автоматический перехват после респавна цели
-    • Без BodyMovers и PlatformStand — чисто сетевой контроль
-    
-    Баланс нагрузки:
-    • Heartbeat: ~60 FireServer/сек (owner) + ~60 (destroy) + ~60 (extend) = ~180/сек
-    • Task.spawn: ~12.5 итераций/сек, TP макс 2/сек, игрушки каждые 0.3с
-    • Итого ~200 FireServer/сек — агрессивно, но не убивает пинг
-]]
+-- ═══════════════════════════════════════════════════════════════
+-- KICK ENGINE
+-- ═══════════════════════════════════════════════════════════════
 
--- Константы кика — все параметры в одном месте
-local KICK_CFG = {
-    TASK_INTERVAL   = 0.08,  -- интервал доп. потока (сек)
-    TP_THRESHOLD    = 40,    -- дистанция для телепорта (стадов)
-    TP_COOLDOWN     = 0.5,   -- минимум между телепортами (сек)
-    TP_BURST        = 2,     -- кол-во burst-вызовов при TP
-    TP_WAIT         = 0.12,  -- пауза перед возвратом после TP
-    TP_OFFSET       = 4,     -- отступ от цели при TP (стадов)
-    TOY_INTERVAL    = 0.3,   -- интервал проверки игрушек (сек)
-    RESPAWN_DELAY   = 1.2,   -- задержка перехвата после респавна (сек)
-    Y_LIMIT         = 2000,  -- граница по Y для пропуска (цель уже улетела)
+local kick = {
+    active      = false,
+    target      = nil,
+    conns       = {},
+    lastTP      = 0,
+    lastToys    = 0,
+    frame       = 0,
 }
 
-local function StopKick()
-    if _G.StopKickFunc then
-        pcall(_G.StopKickFunc)
-        _G.StopKickFunc = nil
+-- ── Утилиты кика ─────────────────────────────────────────────
+
+-- Расширение SimulationRadius для контроля удалённых частей
+local function boostSimRadius()
+    pcall(function()
+        LP.SimulationRadius        = math.huge
+        LP.MaximumSimulationRadius = math.huge
+        settings().Physics.AllowSleep = false
+    end)
+end
+
+-- Овнершип + уничтожение граб-линий по одной части (базовый набор)
+local function pressureBasic(part)
+    if not part or not part.Parent then return end
+    local cf = part.CFrame
+    fireOwner(part, cf)
+    fireDestroy(part)
+end
+
+-- Расширенное давление: + extend + дополнительные части тела
+local function pressureHeavy(char, hrp)
+    if not char or not hrp or not hrp.Parent then return end
+    local cf = hrp.CFrame
+    fireOwner(hrp, cf)
+    fireDestroy(hrp)
+    fireExtend(hrp, cf)
+    -- Захват доп. частей — усиливает контроль, не давая серверу
+    -- вернуть ownership другому клиенту
+    for _, name in ipairs({"Head", "Torso", "UpperTorso", "LowerTorso"}) do
+        local part = char:FindFirstChild(name)
+        if part and part:IsA("BasePart") then
+            fireOwner(part, part.CFrame)
+        end
     end
+end
+
+-- Обнуление физики цели — убирает инерцию перед BodyPosition
+local function killVelocity(hrp)
+    pcall(function()
+        hrp.AssemblyLinearVelocity  = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+end
+
+-- Создание или обновление BodyPosition
+local function applyBodyPosition(hrp, targetPos)
+    local bp = hrp:FindFirstChild(CFG.TAG_BP)
+    if not bp then
+        bp          = Instance.new("BodyPosition")
+        bp.Name     = CFG.TAG_BP
+        bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        bp.D        = CFG.KICK.BP_DAMP
+        bp.P        = CFG.KICK.BP_POWER
+        bp.Parent   = hrp
+    end
+    bp.Position = targetPos
+end
+
+-- Создание или обновление BodyGyro
+local function applyBodyGyro(hrp, targetCF)
+    local bg = hrp:FindFirstChild(CFG.TAG_BG)
+    if not bg then
+        bg           = Instance.new("BodyGyro")
+        bg.Name      = CFG.TAG_BG
+        bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+        bg.D         = CFG.KICK.BG_DAMP
+        bg.P         = CFG.KICK.BG_POWER
+        bg.Parent    = hrp
+    end
+    bg.CFrame = targetCF
+end
+
+-- Удаление BodyMovers с части
+local function removeBodyMovers(hrp)
+    if not hrp then return end
+    local bp = hrp:FindFirstChild(CFG.TAG_BP)
+    local bg = hrp:FindFirstChild(CFG.TAG_BG)
+    if bp then bp:Destroy() end
+    if bg then bg:Destroy() end
+end
+
+-- Нейтрализация оружия цели (NinjaKunai, NinjaShuriken)
+local function processToys(targetName)
+    local spawned = Workspace:FindFirstChild(targetName .. "SpawnedInToys")
+    if not spawned then return end
+
+    for _, toyName in ipairs({"NinjaKunai", "NinjaShuriken"}) do
+        local toy = spawned:FindFirstChild(toyName)
+        if toy then
+            local sp = toy:FindFirstChild("SoundPart")
+            if sp and sp.Parent then
+                fireOwner(sp, sp.CFrame)
+                -- Если перехватили — выбрасываем далеко
+                local ownerVal = sp:FindFirstChild("PartOwner")
+                if ownerVal and ownerVal.Value == LP.Name then
+                    pcall(function() sp.CFrame = CFrame.new(0, 10000, 0) end)
+                end
+            end
+        end
+    end
+end
+
+-- ── Cleanup ──────────────────────────────────────────────────
+
+local function kickCleanup()
+    if not kick.active then return end -- идемпотентность
+    kick.active = false
+
+    -- Отключаем все коннекты
+    for i = #kick.conns, 1, -1 do
+        pcall(function() kick.conns[i]:Disconnect() end)
+        kick.conns[i] = nil
+    end
+
+    -- Убираем следы с цели
+    local target = kick.target
+    if target then
+        local char = getCharacter(target)
+        if char then
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            removeBodyMovers(hrp)
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                pcall(function() hum.PlatformStand = false end)
+            end
+        end
+    end
+
+    kick.target = nil
+    kick.frame  = 0
+    kick.lastTP = 0
+    kick.lastToys = 0
+end
+
+-- ── Публичные функции ────────────────────────────────────────
+
+local function StopKick()
+    kickCleanup()
+    _G.StopKickFunc = nil
 end
 
 local function KickPlayer(target)
     if not target then return end
-    
-    -- Проверяем наличие инструментов до начала
-    if not setOwner or not destroyGrabLine then
+
+    -- Проверка: есть ли remote events
+    if not remotes.setOwner or not remotes.destroy then
         Rayfield:Notify({
-            Title = "Error",
-            Content = "Remote events missing",
+            Title    = "Error",
+            Content  = "Remote events not found",
             Duration = 3,
         })
-        _G.KickEnabled = false
+        state.kickEnabled = false
+        _G.KickEnabled    = false
         return
     end
-    
-    -- Останавливаем предыдущий кик (если был)
+
+    -- Чистим предыдущий кик если был
     StopKick()
-    task.wait(0.02)
 
-    local active = true
-    local conns  = {}         -- все коннекты для cleanup
-    local lastTP = 0          -- таймстамп последнего TP
-    local lastToy = 0         -- таймстамп последней проверки игрушек
-    local kickFrame = 0       -- счётчик кадров (для throttle внутри heartbeat)
+    -- Инициализация состояния
+    kick.active   = true
+    kick.target   = target
+    kick.frame    = 0
+    kick.lastTP   = 0
+    kick.lastToys = 0
 
-    -- ── Cleanup ──────────────────────────────────────────────
-    local function cleanup()
-        if not active then return end
-        active = false
-        for _, c in ipairs(conns) do
-            pcall(function() c:Disconnect() end)
-        end
-        conns = {}
-    end
-
-    -- ── Обработка игрушек (throttled) ────────────────────────
-    local function processToys()
-        local now = tick()
-        if now - lastToy < KICK_CFG.TOY_INTERVAL then return end
-        lastToy = now
-
-        if not target or not target.Parent then return end
-        local spawned = WS:FindFirstChild(target.Name .. "SpawnedInToys")
-        if not spawned then return end
-
-        local toyNames = {"NinjaKunai", "NinjaShuriken"}
-        for _, toyName in ipairs(toyNames) do
-            local toy = spawned:FindFirstChild(toyName)
-            if toy then
-                local sp = toy:FindFirstChild("SoundPart")
-                if sp and sp.Parent then
-                    fireOwner(sp, sp.CFrame)
-                    -- Если мы владелец — убираем в небо
-                    local ownerVal = sp:FindFirstChild("PartOwner")
-                    if ownerVal and ownerVal.Value == LP.Name then
-                        pcall(function()
-                            sp.CFrame = CFrame.new(0, 10000, 0)
-                        end)
-                    end
-                end
-            end
-        end
-    end
-
-    -- ── Обнуление физики цели ────────────────────────────────
-    local function neutralizePhysics(tHRP)
-        pcall(function()
-            tHRP.AssemblyLinearVelocity  = Vector3.zero
-            tHRP.AssemblyAngularVelocity = Vector3.zero
-        end)
-    end
-
-    -- ── Буст SimRadius ───────────────────────────────────────
-    local function boostSim()
-        pcall(function()
-            LP.SimulationRadius        = math.huge
-            LP.MaximumSimulationRadius  = math.huge
-        end)
-    end
-
-    -- ── Сетевой спам (основная "давилка") ────────────────────
-    -- Вызывается в Heartbeat — один набор вызовов за кадр
-    local function networkPressure(tHRP)
-        local cf = tHRP.CFrame
-        fireOwner(tHRP, cf)
-        fireDestroy(tHRP)
-        fireExtend(tHRP, cf)
-    end
-
-    -- ── Дополнительные части персонажа ───────────────────────
-    -- Берём овнершип не только HRP, но и Head/Torso для усиления
-    local function grabExtraParts(tChar)
-        for _, partName in ipairs({"Head", "UpperTorso", "LowerTorso", "Torso"}) do
-            local p = tChar:FindFirstChild(partName)
-            if p and p:IsA("BasePart") then
-                fireOwner(p, p.CFrame)
-            end
-        end
-    end
+    -- Регистрация функции остановки
+    _G.StopKickFunc = StopKick
 
     -- ══════════════════════════════════════════════════════════
-    -- HEARTBEAT — основной цикл (~60 fps)
-    -- Задачи: SimRadius, овнершип, destroy, extend, velocity
+    -- HEARTBEAT — основной цикл
+    -- Один коннект, все задачи с разной частотой
     -- ══════════════════════════════════════════════════════════
-    local hbConn = RunService.Heartbeat:Connect(function()
-        if not active then return end
-        if not target or not target.Parent then return end
 
-        local tChar = target.Character
+    local heartbeatConn = RunService.Heartbeat:Connect(function()
+        if not kick.active then return end
+
+        local tgt = kick.target
+        if not tgt or not tgt.Parent then return end
+
+        local tChar = getCharacter(tgt)
         if not tChar then return end
+
         local tHRP = tChar:FindFirstChild("HumanoidRootPart")
-        if not tHRP then return end
+        if not tHRP or not tHRP.Parent then return end
 
-        -- Пропускаем если цель уже улетела за пределы
-        if tHRP.Position.Y > KICK_CFG.Y_LIMIT then return end
+        -- Цель уже улетела за лимит — пропускаем
+        if tHRP.Position.Y > CFG.KICK.Y_LIMIT then return end
 
-        kickFrame = kickFrame + 1
+        local mHRP = getHRP(LP)
+        if not mHRP then return end
 
-        -- SimRadius — каждый кадр
-        boostSim()
+        kick.frame += 1
+        local now = tick()
 
-        -- Основной сетевой спам — каждый кадр
-        networkPressure(tHRP)
+        -- [КАЖДЫЙ КАДР] —————————————————————————————————————
 
-        -- Обнуление физики — каждый кадр
-        neutralizePhysics(tHRP)
+        -- SimRadius: без него ownership удалённых частей не работает
+        boostSimRadius()
 
-        -- Дополнительные части — каждые 3 кадра (не каждый, чтобы не перегружать)
-        if kickFrame % 3 == 0 then
-            grabExtraParts(tChar)
+        -- Базовое сетевое давление: owner + destroy
+        pressureBasic(tHRP)
+
+        -- Выключаем humanoid-контроль (без этого BodyPosition бессилен
+        -- против ходьбы/прыжков игрока)
+        local tHum = tChar:FindFirstChildOfClass("Humanoid")
+        if tHum then
+            pcall(function() tHum.PlatformStand = true end)
         end
 
-        -- Игрушки — по throttle-таймеру
-        processToys()
+        -- Обнуляем инерцию ПЕРЕД установкой BodyPosition,
+        -- чтобы BP сразу начал тянуть без «борьбы» с velocity
+        killVelocity(tHRP)
+
+        -- BodyPosition: тянем цель к позиции чуть выше LP
+        -- Достаточно близко для стабильного ownership,
+        -- в воздухе — цель не может убежать
+        local pullTarget = mHRP.Position + Vector3.new(0, CFG.KICK.BP_OFFSET_Y, 0)
+        applyBodyPosition(tHRP, pullTarget)
+
+        -- BodyGyro: фиксируем ориентацию на LP
+        applyBodyGyro(tHRP, mHRP.CFrame)
+
+        -- [КАЖДЫЕ N КАДРОВ] —————————————————————————————————
+
+        if kick.frame % CFG.KICK.HEAVY_EVERY == 0 then
+            pressureHeavy(tChar, tHRP)
+        end
+
+        -- [THROTTLED] — игрушки ——————————————————————————————
+
+        if now - kick.lastToys >= CFG.KICK.TOY_INTERVAL then
+            kick.lastToys = now
+            pcall(processToys, tgt.Name)
+        end
     end)
-    table.insert(conns, hbConn)
+    table.insert(kick.conns, heartbeatConn)
 
     -- ══════════════════════════════════════════════════════════
-    -- TASK.SPAWN — TP-перехват
-    -- Единственная задача: если далеко — подлететь, перехватить, вернуться
+    -- TP-ПЕРЕХВАТ — отдельный медленный цикл
+    -- Единственная задача: если цель далеко — подлететь, перехватить,
+    -- вернуться. С кулдауном чтобы не мерцать.
     -- ══════════════════════════════════════════════════════════
+
     task.spawn(function()
-        while active do
-            -- Проверка валидности
-            if not target or not target.Parent then break end
+        while kick.active do
+            -- Guard: цель ещё в игре?
+            local tgt = kick.target
+            if not tgt or not tgt.Parent then break end
 
-            local myChar = LP.Character
-            local tChar  = target.Character
+            local mHRP = getHRP(LP)
+            local tHRP = getHRP(tgt)
 
-            if myChar and tChar then
-                local mHRP = myChar:FindFirstChild("HumanoidRootPart")
-                local tHRP = tChar:FindFirstChild("HumanoidRootPart")
+            if mHRP and tHRP and tHRP.Position.Y < CFG.KICK.Y_LIMIT then
+                local dist = (mHRP.Position - tHRP.Position).Magnitude
+                local now  = tick()
 
-                if mHRP and mHRP.Parent and tHRP and tHRP.Parent then
-                    local dist = (mHRP.Position - tHRP.Position).Magnitude
-                    local now  = tick()
+                -- Три условия: далеко + кулдаун прошёл + цель не в небе
+                if dist > CFG.KICK.TP_DIST
+                   and now - kick.lastTP >= CFG.KICK.TP_COOLDOWN
+                then
+                    kick.lastTP = now
 
-                    -- TP только если: далеко + кулдаун прошёл + цель не в небе
-                    if dist > KICK_CFG.TP_THRESHOLD
-                       and now - lastTP >= KICK_CFG.TP_COOLDOWN
-                       and tHRP.Position.Y < KICK_CFG.Y_LIMIT
-                    then
-                        lastTP = now
+                    -- Запоминаем позицию LP
+                    local savedCF = mHRP.CFrame
 
-                        -- Сохраняем позицию
-                        local savedCF = mHRP.CFrame
+                    -- Телепорт к цели (чуть в стороне чтобы не внутри модели)
+                    pcall(function()
+                        mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, CFG.KICK.TP_OFFSET)
+                    end)
 
-                        -- Телепорт к цели
-                        pcall(function()
-                            mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, KICK_CFG.TP_OFFSET)
-                        end)
+                    -- Burst-спам при сближении —
+                    -- момент максимальной эффективности ownership-перехвата
+                    for _ = 1, CFG.KICK.TP_BURST do
+                        if not kick.active then break end
+                        pressureBasic(tHRP)
+                    end
 
-                        -- Burst-спам при сближении
-                        for _ = 1, KICK_CFG.TP_BURST do
-                            if not active then break end
-                            if tHRP and tHRP.Parent then
-                                local cf = tHRP.CFrame
-                                fireOwner(tHRP, cf)
-                                fireDestroy(tHRP)
-                                fireExtend(tHRP, cf)
-                            end
-                        end
+                    -- Даём серверу время обработать наш burst
+                    task.wait(CFG.KICK.TP_LINGER)
 
-                        -- Короткая пауза, чтобы сервер обработал
-                        task.wait(KICK_CFG.TP_WAIT)
-
-                        -- Возврат на исходную позицию
-                        if active and myChar and myChar.Parent then
-                            local hrpNow = myChar:FindFirstChild("HumanoidRootPart")
-                            if hrpNow and hrpNow.Parent then
-                                pcall(function()
-                                    hrpNow.CFrame = savedCF
-                                end)
-                            end
+                    -- Возвращаемся на исходную позицию
+                    if kick.active then
+                        local hrpNow = getHRP(LP)
+                        if hrpNow then
+                            pcall(function() hrpNow.CFrame = savedCF end)
                         end
                     end
                 end
             end
 
-            task.wait(KICK_CFG.TASK_INTERVAL)
+            task.wait(CFG.KICK.TP_INTERVAL)
         end
 
-        -- Если цикл вышел сам (target ушёл) — cleanup
-        cleanup()
+        -- Цикл завершился (цель ушла) — cleanup
+        if kick.active then kickCleanup() end
     end)
 
     -- ══════════════════════════════════════════════════════════
-    -- CharacterAdded — перехват после респавна цели
+    -- RESPAWN HANDLER — перехват после респавна цели
     -- ══════════════════════════════════════════════════════════
-    local charConn = target.CharacterAdded:Connect(function(newChar)
-        if not active then return end
+
+    local charAddedConn = target.CharacterAdded:Connect(function(newChar)
+        if not kick.active then return end
 
         -- Ждём загрузки нового персонажа
-        task.wait(KICK_CFG.RESPAWN_DELAY)
-
-        if not active then return end
-        if not target or not target.Parent then return end
+        task.wait(CFG.KICK.RESPAWN_DELAY)
+        if not kick.active then return end
 
         local tHRP = newChar:FindFirstChild("HumanoidRootPart")
                   or newChar:WaitForChild("HumanoidRootPart", 3)
         if not tHRP then return end
 
-        -- Агрессивный перехват сразу после респавна
-        for _ = 1, 5 do
-            if not active then return end
-            fireOwner(tHRP, tHRP.CFrame)
-            fireDestroy(tHRP)
-            task.wait(0.05)
+        -- Агрессивный перехват сразу после респавна:
+        -- сервер ещё не раздал ownership, самое время захватить
+        for i = 1, CFG.KICK.RESPAWN_BURST do
+            if not kick.active then return end
+            pressureBasic(tHRP)
+            if i < CFG.KICK.RESPAWN_BURST then task.wait(0.05) end
         end
     end)
-    table.insert(conns, charConn)
-
-    -- Сохраняем функцию остановки
-    _G.StopKickFunc = function()
-        cleanup()
-    end
+    table.insert(kick.conns, charAddedConn)
 end
 
--- ============================================================
--- NOCLIP
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+-- MOVEMENT
+-- ═══════════════════════════════════════════════════════════════
+
+-- Noclip
+local noclipConn  = nil
+local noclipParts = {}
+
 local function cacheNoclipParts()
     noclipParts = {}
-    local c = LP.Character
-    if not c then return end
-    for _, p in ipairs(c:GetChildren()) do
+    local char = getCharacter(LP)
+    if not char then return end
+    for _, p in ipairs(char:GetChildren()) do
         if p:IsA("BasePart") then table.insert(noclipParts, p) end
     end
 end
 
-local function toggleNoclip(state)
-    noclipOn = state
-    if noclipConn then noclipConn:Disconnect() noclipConn = nil end
-    if state then
+local function setNoclip(enabled)
+    state.noclipOn = enabled
+    if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
+    if enabled then
         cacheNoclipParts()
         noclipConn = RunService.Stepped:Connect(function()
             for _, p in ipairs(noclipParts) do
@@ -493,139 +622,141 @@ end
 
 LP.CharacterAdded:Connect(function()
     task.wait(0.5)
-    if noclipOn then cacheNoclipParts() end
+    if state.noclipOn then cacheNoclipParts() end
 end)
 
--- ============================================================
--- SPEED / JUMP
--- ============================================================
+-- Speed / Jump — применяется каждый кадр
 RunService.Heartbeat:Connect(function()
-    local hum = getHum(LP)
+    local hum = getHumanoid(LP)
     if not hum then return end
-    if customSpeed ~= 16 then hum.WalkSpeed = customSpeed end
-    if customJump  ~= 50 then hum.JumpPower = customJump end
+    if state.walkSpeed ~= 16 then hum.WalkSpeed = state.walkSpeed end
+    if state.jumpPower ~= 50 then hum.JumpPower  = state.jumpPower end
 end)
 
--- ============================================================
--- PLAYER ESP
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+-- ESP
+-- ═══════════════════════════════════════════════════════════════
+
+local espObjects = {}
+
 local function clearESP()
-    for _, obj in pairs(espObjects) do pcall(function() obj:Destroy() end) end
-    espObjects = {}
+    for _, obj in ipairs(espObjects) do pcall(obj.Destroy, obj) end
+    table.clear(espObjects)
 end
 
 local function makeESP(plr)
     if plr == LP then return end
-    local char = plr.Character
+    local char = getCharacter(plr)
     if not char then return end
     local head = char:FindFirstChild("Head")
     if not head then return end
 
-    local hl = Instance.new("Highlight")
-    hl.Name = "fifeHL"
-    hl.FillTransparency    = 0.75
+    -- Highlight
+    local hl              = Instance.new("Highlight")
+    hl.Name               = "fifeHL"
+    hl.FillTransparency   = 0.75
     hl.OutlineTransparency = 0
-    hl.OutlineColor        = espColor
-    hl.FillColor           = espColor
-    hl.Parent              = char
+    hl.OutlineColor       = state.espColor
+    hl.FillColor          = state.espColor
+    hl.Parent             = char
     table.insert(espObjects, hl)
 
-    local bb = Instance.new("BillboardGui")
-    bb.Name         = "fifeBB"
-    bb.Adornee      = head
-    bb.Size         = UDim2.new(0, 180, 0, 44)
-    bb.StudsOffset  = Vector3.new(0, 2.5, 0)
-    bb.AlwaysOnTop  = true
-    bb.Parent       = head
+    -- Billboard
+    local bb          = Instance.new("BillboardGui")
+    bb.Name           = "fifeBB"
+    bb.Adornee        = head
+    bb.Size           = UDim2.new(0, 180, 0, 44)
+    bb.StudsOffset    = Vector3.new(0, 2.5, 0)
+    bb.AlwaysOnTop    = true
+    bb.Parent         = head
 
-    local bg = Instance.new("Frame")
-    bg.Size                 = UDim2.new(1, 0, 1, 0)
-    bg.BackgroundColor3     = Color3.fromRGB(15, 15, 15)
-    bg.BackgroundTransparency = 0.35
-    bg.BorderSizePixel      = 0
-    bg.Parent               = bb
-
+    local bg                     = Instance.new("Frame")
+    bg.Size                      = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3          = Color3.fromRGB(15, 15, 15)
+    bg.BackgroundTransparency    = 0.35
+    bg.BorderSizePixel           = 0
+    bg.Parent                    = bb
     Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 6)
 
-    local us = Instance.new("UIStroke")
-    us.Color        = espColor
-    us.Thickness    = 1.5
-    us.Transparency = 0.3
-    us.Parent       = bg
+    local us          = Instance.new("UIStroke")
+    us.Color          = state.espColor
+    us.Thickness      = 1.5
+    us.Transparency   = 0.3
+    us.Parent         = bg
 
-    local nameL = Instance.new("TextLabel")
-    nameL.Size                  = UDim2.new(1, -8, 0.5, 0)
-    nameL.Position              = UDim2.new(0, 4, 0, 2)
-    nameL.BackgroundTransparency = 1
-    nameL.Font                  = Enum.Font.GothamBold
-    nameL.TextSize              = 13
-    nameL.TextColor3            = Color3.fromRGB(255, 255, 255)
-    nameL.TextXAlignment        = Enum.TextXAlignment.Left
-    nameL.TextStrokeTransparency = 0.5
-    nameL.Text                  = plr.Name
-    nameL.Parent                = bg
+    local nameLabel                   = Instance.new("TextLabel")
+    nameLabel.Size                    = UDim2.new(1, -8, 0.5, 0)
+    nameLabel.Position                = UDim2.new(0, 4, 0, 2)
+    nameLabel.BackgroundTransparency  = 1
+    nameLabel.Font                    = Enum.Font.GothamBold
+    nameLabel.TextSize                = 13
+    nameLabel.TextColor3              = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextXAlignment          = Enum.TextXAlignment.Left
+    nameLabel.TextStrokeTransparency  = 0.5
+    nameLabel.Text                    = plr.Name
+    nameLabel.Parent                  = bg
 
-    local distL = Instance.new("TextLabel")
-    distL.Name                   = "Dist"
-    distL.Size                   = UDim2.new(1, -8, 0.5, 0)
-    distL.Position               = UDim2.new(0, 4, 0.5, 0)
-    distL.BackgroundTransparency = 1
-    distL.Font                   = Enum.Font.Gotham
-    distL.TextSize               = 11
-    distL.TextColor3             = Color3.fromRGB(200, 200, 100)
-    distL.TextXAlignment         = Enum.TextXAlignment.Left
-    distL.TextStrokeTransparency = 0.5
-    distL.Text                   = "0m"
-    distL.Parent                 = bg
+    local distLabel                   = Instance.new("TextLabel")
+    distLabel.Name                    = "Dist"
+    distLabel.Size                    = UDim2.new(1, -8, 0.5, 0)
+    distLabel.Position                = UDim2.new(0, 4, 0.5, 0)
+    distLabel.BackgroundTransparency  = 1
+    distLabel.Font                    = Enum.Font.Gotham
+    distLabel.TextSize                = 11
+    distLabel.TextColor3              = Color3.fromRGB(200, 200, 100)
+    distLabel.TextXAlignment          = Enum.TextXAlignment.Left
+    distLabel.TextStrokeTransparency  = 0.5
+    distLabel.Text                    = "0m"
+    distLabel.Parent                  = bg
 
     table.insert(espObjects, bb)
 end
 
-local function createESP()
+local function refreshESP()
     clearESP()
-    if not espEnabled then return end
+    if not state.espEnabled then return end
     for _, plr in ipairs(Players:GetPlayers()) do makeESP(plr) end
 end
 
-local function updateESPColor()
-    for _, obj in pairs(espObjects) do
+local function updateESPColors()
+    for _, obj in ipairs(espObjects) do
         pcall(function()
             if obj:IsA("Highlight") then
-                obj.OutlineColor = espColor
-                obj.FillColor    = espColor
+                obj.OutlineColor = state.espColor
+                obj.FillColor    = state.espColor
             elseif obj:IsA("BillboardGui") then
                 local bg = obj:FindFirstChildWhichIsA("Frame")
                 if bg then
                     local s = bg:FindFirstChildWhichIsA("UIStroke")
-                    if s then s.Color = espColor end
+                    if s then s.Color = state.espColor end
                 end
             end
         end)
     end
 end
 
+-- Обновление дистанции в ESP-лейблах
 task.spawn(function()
     while true do
         task.wait(0.4)
-        if espEnabled then
+        if state.espEnabled then
             local mHRP = getHRP(LP)
             if mHRP then
-                for _, obj in pairs(espObjects) do
+                for _, obj in ipairs(espObjects) do
                     pcall(function()
-                        if obj:IsA("BillboardGui") and obj.Adornee and obj.Adornee.Parent then
-                            local bg = obj:FindFirstChildWhichIsA("Frame")
-                            if not bg then return end
-                            local dl = bg:FindFirstChild("Dist")
-                            if dl then
-                                local d = (mHRP.Position - obj.Adornee.Position).Magnitude
-                                dl.Text = string.format("%.0fm", d)
-                                dl.TextColor3 = d < 30
-                                    and Color3.fromRGB(255, 60, 60)
-                                    or d < 80
-                                    and Color3.fromRGB(255, 220, 60)
-                                    or Color3.fromRGB(60, 255, 60)
-                            end
-                        end
+                        if not obj:IsA("BillboardGui") then return end
+                        if not obj.Adornee or not obj.Adornee.Parent then return end
+                        local bg = obj:FindFirstChildWhichIsA("Frame")
+                        if not bg then return end
+                        local dl = bg:FindFirstChild("Dist")
+                        if not dl then return end
+                        local d = (mHRP.Position - obj.Adornee.Position).Magnitude
+                        dl.Text = string.format("%.0fm", d)
+                        dl.TextColor3 = d < 30
+                            and Color3.fromRGB(255, 60, 60)
+                            or d < 80
+                            and Color3.fromRGB(255, 220, 60)
+                            or Color3.fromRGB(60, 255, 60)
                     end)
                 end
             end
@@ -633,29 +764,31 @@ task.spawn(function()
     end
 end)
 
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
 -- PCLD ESP
--- ============================================================
-local PCLD_NAME = "PlayerCharacterLocationDetector"
+-- ═══════════════════════════════════════════════════════════════
 
-local function pcldDisc(key)
+local PCLD_NAME    = "PlayerCharacterLocationDetector"
+local trackedPCLD  = nil
+local pcldConns    = {}
+
+local function disconnectPCLD(key)
     if pcldConns[key] then
         pcall(function() pcldConns[key]:Disconnect() end)
         pcldConns[key] = nil
     end
 end
 
-local function isMine(part)
+local function isMyPCLD(part)
     local hrp = getHRP(LP)
-    if not hrp then return false end
-    return (part.Position - hrp.Position).Magnitude < 2
+    return hrp and (part.Position - hrp.Position).Magnitude < 2
 end
 
-local function applyPCLD()
+local function stylePCLD()
     if not trackedPCLD or not trackedPCLD.Parent then return end
     pcall(function()
-        trackedPCLD.Transparency = pcldTrans
-        trackedPCLD.Color        = pcldColor
+        trackedPCLD.Transparency = state.pcldTrans
+        trackedPCLD.Color        = state.pcldColor
     end)
 end
 
@@ -666,164 +799,171 @@ local function resetPCLD()
     trackedPCLD = nil
 end
 
-local function scanPCLD()
+local function enablePCLD()
+    state.pcldOn = true
+
+    -- Поиск существующего PCLD
     trackedPCLD = nil
-    for _, child in ipairs(WS:GetChildren()) do
-        if child.Name == PCLD_NAME and child:IsA("BasePart") and not isMine(child) then
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if child.Name == PCLD_NAME and child:IsA("BasePart") and not isMyPCLD(child) then
             trackedPCLD = child
             break
         end
     end
-end
+    if trackedPCLD then stylePCLD() end
 
-local function enablePCLD()
-    pcldOn = true
-    scanPCLD()
-    if trackedPCLD then applyPCLD() end
-
-    pcldDisc("add")
-    pcldConns["add"] = WS.ChildAdded:Connect(function(part)
-        if not pcldOn or part.Name ~= PCLD_NAME then return end
+    -- Отслеживание новых
+    disconnectPCLD("add")
+    pcldConns["add"] = Workspace.ChildAdded:Connect(function(part)
+        if not state.pcldOn or part.Name ~= PCLD_NAME then return end
         task.wait(0.15)
-        if part:IsA("BasePart") and not isMine(part) then
+        if part:IsA("BasePart") and not isMyPCLD(part) then
             trackedPCLD = part
-            applyPCLD()
+            stylePCLD()
         end
     end)
 
-    pcldDisc("rem")
-    pcldConns["rem"] = WS.ChildRemoved:Connect(function(part)
+    disconnectPCLD("rem")
+    pcldConns["rem"] = Workspace.ChildRemoved:Connect(function(part)
         if part == trackedPCLD then trackedPCLD = nil end
     end)
 end
 
 local function disablePCLD()
-    pcldOn = false
+    state.pcldOn = false
     resetPCLD()
-    pcldDisc("add")
-    pcldDisc("rem")
+    disconnectPCLD("add")
+    disconnectPCLD("rem")
 end
 
--- ============================================================
--- PACKET DETECTOR
--- ============================================================
-local function analyzePacket(_, args)
-    if not _G.PacketMonitor then return end
+-- ═══════════════════════════════════════════════════════════════
+-- PACKET MONITOR
+-- ═══════════════════════════════════════════════════════════════
+
+local function onPacket(_, args)
+    if not state.packetMon then return end
     pcall(function()
         local sz, who = 0, "?"
         for _, a in pairs(args) do
-            if type(a) == "string" then sz = sz + #a end
+            if type(a) == "string" then sz += #a end
             if typeof(a) == "Instance" and a:IsA("BasePart") then
                 local p = Players:GetPlayerFromCharacter(a.Parent)
                 if p then who = p.Name end
             end
         end
         if sz / 1024 > 10 then
-            local s = sz / 1024
-            sysChat("LAG! " .. who .. " | "
-                .. (s >= 1024
-                    and string.format("%.1fMB", s / 1024)
-                    or  string.format("%.1fKB", s)))
+            local kb = sz / 1024
+            local txt = kb >= 1024
+                and string.format("%.1fMB", kb / 1024)
+                or  string.format("%.1fKB", kb)
+            sysChat("LAG! " .. who .. " | " .. txt)
         end
     end)
 end
 
-if extendLine then
+if remotes.extend then
     pcall(function()
-        extendLine.OnClientEvent:Connect(function(...)
-            analyzePacket("E", {...})
+        remotes.extend.OnClientEvent:Connect(function(...)
+            onPacket("E", {...})
         end)
     end)
 end
-if createLine then
+if remotes.create then
     pcall(function()
-        createLine.OnClientEvent:Connect(function(...)
-            analyzePacket("C", {...})
+        remotes.create.OnClientEvent:Connect(function(...)
+            onPacket("C", {...})
         end)
     end)
 end
 
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
 -- TARGET MANAGER
--- ============================================================
-local DropSaved = nil
+-- ═══════════════════════════════════════════════════════════════
+
+local DropSaved = nil -- ссылка на Rayfield dropdown, заполняется позже
 
 local function getPlayerNames()
-    local t = {}
+    local names = {}
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP then table.insert(t, p.Name) end
+        if p ~= LP then table.insert(names, p.Name) end
     end
-    if #t == 0 then table.insert(t, "---") end
-    return t
+    if #names == 0 then table.insert(names, "---") end
+    return names
 end
 
-local function updateSavedDrop()
+local function syncSavedDropdown()
     if DropSaved then
         pcall(function()
-            DropSaved:Set(#savedTargets > 0 and savedTargets or {"---"})
+            DropSaved:Set(#state.saved > 0 and state.saved or {"---"})
         end)
     end
 end
 
 local function addToSaved(name)
     if not name then return end
-    for _, v in pairs(savedTargets) do
+    for _, v in ipairs(state.saved) do
         if v == name then return end
     end
-    table.insert(savedTargets, name)
-    updateSavedDrop()
+    table.insert(state.saved, name)
+    syncSavedDropdown()
 end
 
+-- Автоматическое отслеживание join/leave сохранённых целей
 Players.PlayerAdded:Connect(function(plr)
-    for _, n in pairs(savedTargets) do
-        if n == plr.Name then
+    for _, name in ipairs(state.saved) do
+        if name == plr.Name then
             sysChat(plr.Name .. " JOINED!", Color3.fromRGB(255, 50, 50))
             Rayfield:Notify({
-                Title   = "Alert",
-                Content = plr.Name .. " joined!",
+                Title    = "Target Alert",
+                Content  = plr.Name .. " joined the server",
                 Duration = 5,
             })
-            if _G.KickEnabled and selectedTarget
-               and selectedTarget.Name == plr.Name then
+            -- Если кик включён и мы ждали именно этого игрока
+            if state.kickEnabled and state.target
+               and state.target.Name == plr.Name then
                 task.wait(2)
-                selectedTarget = plr
-                KickPlayer(plr)
+                state.target = plr
+                task.spawn(KickPlayer, plr)
             end
         end
     end
-    if espEnabled then task.wait(2) makeESP(plr) end
+    if state.espEnabled then task.wait(2); makeESP(plr) end
 end)
 
 Players.PlayerRemoving:Connect(function(plr)
-    for _, n in pairs(savedTargets) do
-        if n == plr.Name then
+    for _, name in ipairs(state.saved) do
+        if name == plr.Name then
             sysChat(plr.Name .. " left", Color3.fromRGB(100, 255, 100))
         end
     end
-    local rem = {}
-    for i, obj in pairs(espObjects) do
+
+    -- Удаляем ESP-объекты ушедшего игрока
+    local toRemove = {}
+    for i, obj in ipairs(espObjects) do
         pcall(function()
-            if obj:IsA("Highlight") and obj.Parent
-               and Players:GetPlayerFromCharacter(obj.Parent) == plr then
+            local match = false
+            if obj:IsA("Highlight") and obj.Parent then
+                match = Players:GetPlayerFromCharacter(obj.Parent) == plr
+            elseif obj:IsA("BillboardGui") and obj.Adornee and obj.Adornee.Parent then
+                match = Players:GetPlayerFromCharacter(obj.Adornee.Parent) == plr
+            end
+            if match then
                 obj:Destroy()
-                table.insert(rem, i)
-            elseif obj:IsA("BillboardGui") and obj.Adornee
-               and obj.Adornee.Parent
-               and Players:GetPlayerFromCharacter(obj.Adornee.Parent) == plr then
-                obj:Destroy()
-                table.insert(rem, i)
+                table.insert(toRemove, i)
             end
         end)
     end
-    for i = #rem, 1, -1 do table.remove(espObjects, rem[i]) end
+    for i = #toRemove, 1, -1 do table.remove(espObjects, toRemove[i]) end
 end)
 
+-- Loop TP
 task.spawn(function()
     while true do
         task.wait(0.3)
-        if loopTPOn and selectedTarget then
+        if state.loopTP and state.target then
             pcall(function()
-                local m, t = getHRP(LP), getHRP(selectedTarget)
+                local m = getHRP(LP)
+                local t = getHRP(state.target)
                 if m and t then
                     m.CFrame = t.CFrame * CFrame.new(0, 0, 10)
                 end
@@ -832,14 +972,83 @@ task.spawn(function()
     end
 end)
 
--- ============================================================
--- GUI
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+-- SIM RADIUS (отдельный toggle, для PCLD и прочего)
+-- ═══════════════════════════════════════════════════════════════
+
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if state.simRadius then
+            boostSimRadius()
+            if state.target then
+                local hrp = getHRP(state.target)
+                if hrp then fireOwner(hrp, hrp.CFrame) end
+            end
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- INPUT
+-- ═══════════════════════════════════════════════════════════════
+
+UIS.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    -- T = клик-телепорт к курсору
+    if input.KeyCode == Enum.KeyCode.T then
+        pcall(function()
+            local hrp = getHRP(LP)
+            if hrp then
+                hrp.CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(0, 3, 0))
+            end
+        end)
+        return
+    end
+
+    -- Кастомный бинд = выбор цели курсором
+    if input.KeyCode == state.selectBind then
+        pcall(function()
+            local model = Mouse.Target
+                      and Mouse.Target:FindFirstAncestorOfClass("Model")
+            if not model then return end
+
+            local plr = Players:GetPlayerFromCharacter(model)
+            if not plr or plr == LP then return end
+
+            -- Нельзя менять цель во время активного кика
+            if state.kickEnabled and state.target
+               and state.target ~= plr and state.target.Parent then
+                Rayfield:Notify({
+                    Title   = "Blocked",
+                    Content = "Stop kick before switching target",
+                    Duration = 2,
+                })
+                return
+            end
+
+            state.target = plr
+            addToSaved(plr.Name)
+            Rayfield:Notify({Title = "Selected", Content = plr.Name, Duration = 2})
+
+            if state.kickEnabled then
+                task.spawn(KickPlayer, plr)
+            end
+        end)
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- UI (Rayfield)
+-- ═══════════════════════════════════════════════════════════════
+
 local TabCombat = Window:CreateTab("Combat",   4483362458)
 local TabMove   = Window:CreateTab("Movement", 4483362458)
 local TabVisual = Window:CreateTab("Visuals",  4483362458)
 
--- ── Combat Tab ───────────────────────────────────────────────
+-- ── Combat ───────────────────────────────────────────────────
+
 TabCombat:CreateSection("Target")
 
 TabCombat:CreateDropdown({
@@ -851,27 +1060,19 @@ TabCombat:CreateDropdown({
         local name = type(val) == "table" and val[1] or val
         if not name or name == "---" then return end
         local plr = Players:FindFirstChild(name)
-        if plr then selectedTarget = plr end
+        if plr then state.target = plr end
     end,
 })
 
 TabCombat:CreateButton({
     Name = "Add to Saved",
     Callback = function()
-        if not selectedTarget or not selectedTarget.Parent then
-            Rayfield:Notify({Title = "Error", Content = "Select player first", Duration = 2})
+        if not state.target or not state.target.Parent then
+            Rayfield:Notify({Title = "Error", Content = "Select target first", Duration = 2})
             return
         end
-        local name = selectedTarget.Name
-        for _, v in pairs(savedTargets) do
-            if v == name then
-                Rayfield:Notify({Title = "Info", Content = name .. " already saved", Duration = 2})
-                return
-            end
-        end
-        table.insert(savedTargets, name)
-        updateSavedDrop()
-        Rayfield:Notify({Title = "Saved", Content = name, Duration = 2})
+        addToSaved(state.target.Name)
+        Rayfield:Notify({Title = "Saved", Content = state.target.Name, Duration = 2})
     end,
 })
 
@@ -883,16 +1084,18 @@ DropSaved = TabCombat:CreateDropdown({
     Callback       = function(val)
         local name = type(val) == "table" and val[1] or val
         if not name or name == "---" then return end
-        if _G.KickEnabled and selectedTarget and selectedTarget.Parent
-           and selectedTarget.Name ~= name then
+
+        if state.kickEnabled and state.target and state.target.Parent
+           and state.target.Name ~= name then
             Rayfield:Notify({Title = "Blocked", Content = "Stop kick first", Duration = 2})
             return
         end
-        currentSaved = name
+
+        state.currentSaved = name
         local plr = Players:FindFirstChild(name)
         if plr then
-            selectedTarget = plr
-            if _G.KickEnabled then KickPlayer(plr) end
+            state.target = plr
+            if state.kickEnabled then task.spawn(KickPlayer, plr) end
         else
             Rayfield:Notify({Title = "Offline", Content = name, Duration = 2})
         end
@@ -902,44 +1105,52 @@ DropSaved = TabCombat:CreateDropdown({
 TabCombat:CreateButton({
     Name = "Remove from Saved",
     Callback = function()
-        if currentSaved then
-            for i, v in ipairs(savedTargets) do
-                if v == currentSaved then
-                    table.remove(savedTargets, i)
-                    break
-                end
+        if not state.currentSaved then return end
+        for i, v in ipairs(state.saved) do
+            if v == state.currentSaved then
+                table.remove(state.saved, i)
+                break
             end
-            updateSavedDrop()
-            currentSaved = nil
         end
+        syncSavedDropdown()
+        state.currentSaved = nil
     end,
 })
 
 TabCombat:CreateButton({
     Name = "Clear Saved",
     Callback = function()
-        savedTargets = {}
-        updateSavedDrop()
-        selectedTarget = nil
-        currentSaved   = nil
+        table.clear(state.saved)
+        syncSavedDropdown()
+        state.target       = nil
+        state.currentSaved = nil
         StopKick()
     end,
 })
 
 TabCombat:CreateSection("Kick")
 
+-- ╔══════════════════════════════════════════════════════════════╗
+-- ║  КЛЮЧЕВОЙ МОМЕНТ: KickPlayer содержит task.wait(), поэтому ║
+-- ║  вызываем через task.spawn, чтобы не yield'ить callback    ║
+-- ║  Rayfield → это решает Callback Error                      ║
+-- ╚══════════════════════════════════════════════════════════════╝
+
 TabCombat:CreateToggle({
     Name         = "Kick",
     CurrentValue = false,
-    Callback     = function(v)
-        _G.KickEnabled = v
-        if v then
-            if selectedTarget and selectedTarget.Parent then
-                local tName = selectedTarget.Name -- сохраняем до вызова
-                KickPlayer(selectedTarget)
-                Rayfield:Notify({Title = "Kick", Content = tName, Duration = 2})
+    Callback     = function(enabled)
+        state.kickEnabled = enabled
+        _G.KickEnabled    = enabled
+
+        if enabled then
+            if state.target and state.target.Parent then
+                local name = state.target.Name
+                -- task.spawn: KickPlayer делает yield, нельзя в callback напрямую
+                task.spawn(KickPlayer, state.target)
+                Rayfield:Notify({Title = "Kick", Content = name, Duration = 2})
             else
-                Rayfield:Notify({Title = "Ready", Content = "Select target", Duration = 2})
+                Rayfield:Notify({Title = "Kick", Content = "Select target first", Duration = 2})
             end
         else
             StopKick()
@@ -955,149 +1166,100 @@ local bindLabel = TabCombat:CreateLabel("Select bind: X")
 TabCombat:CreateButton({
     Name = "Change Bind",
     Callback = function()
-        Rayfield:Notify({Title = "Press any key...", Content = "", Duration = 3})
+        Rayfield:Notify({Title = "Bind", Content = "Press any key...", Duration = 3})
         local waiting = true
-        local cn
-        cn = UIS.InputBegan:Connect(function(input, gpe)
+        local conn
+        conn = UIS.InputBegan:Connect(function(input, gpe)
             if gpe then return end
-            if input.KeyCode ~= Enum.KeyCode.Unknown then
-                selectBind = input.KeyCode
-                pcall(function()
-                    bindLabel:Set("Select bind: " .. selectBind.Name)
-                end)
-                waiting = false
-                cn:Disconnect()
-            end
+            if input.KeyCode == Enum.KeyCode.Unknown then return end
+            state.selectBind = input.KeyCode
+            pcall(function() bindLabel:Set("Select bind: " .. state.selectBind.Name) end)
+            waiting = false
+            conn:Disconnect()
         end)
         task.delay(5, function()
-            if waiting then pcall(function() cn:Disconnect() end) end
+            if waiting then pcall(function() conn:Disconnect() end) end
         end)
     end,
 })
 
-UIS.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
+-- ── Movement ─────────────────────────────────────────────────
 
-    -- T = клик-TP
-    if input.KeyCode == Enum.KeyCode.T then
-        pcall(function()
-            local hrp = getHRP(LP)
-            if hrp then
-                hrp.CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(0, 3, 0))
-            end
-        end)
-    end
-
-    -- Кастомный бинд = выбор цели курсором
-    if input.KeyCode == selectBind then
-        pcall(function()
-            local model = Mouse.Target and Mouse.Target:FindFirstAncestorOfClass("Model")
-            if not model then return end
-            local plr = Players:GetPlayerFromCharacter(model)
-            if not plr or plr == LP then return end
-            if _G.KickEnabled and selectedTarget
-               and selectedTarget ~= plr and selectedTarget.Parent then
-                Rayfield:Notify({Title = "Blocked", Content = "Stop kick first", Duration = 2})
-                return
-            end
-            selectedTarget = plr
-            addToSaved(plr.Name)
-            Rayfield:Notify({Title = "Selected", Content = plr.Name, Duration = 2})
-            if _G.KickEnabled then KickPlayer(plr) end
-        end)
-    end
-end)
-
--- ── Movement Tab ─────────────────────────────────────────────
 TabMove:CreateSection("Teleport")
 TabMove:CreateToggle({
     Name = "Loop TP", CurrentValue = false,
-    Callback = function(v) loopTPOn = v end,
+    Callback = function(v) state.loopTP = v end,
 })
 
 TabMove:CreateSection("Speed")
 TabMove:CreateSlider({
     Name = "Walk Speed", Range = {16, 200}, Increment = 1,
     Suffix = "", CurrentValue = 16,
-    Callback = function(v) customSpeed = v end,
+    Callback = function(v) state.walkSpeed = v end,
 })
 TabMove:CreateSlider({
     Name = "Jump Power", Range = {50, 300}, Increment = 5,
     Suffix = "", CurrentValue = 50,
-    Callback = function(v) customJump = v end,
+    Callback = function(v) state.jumpPower = v end,
 })
 TabMove:CreateToggle({
     Name = "Noclip", CurrentValue = false,
-    Callback = function(v) toggleNoclip(v) end,
+    Callback = function(v) setNoclip(v) end,
 })
 
--- ── Visuals Tab ──────────────────────────────────────────────
+-- ── Visuals ──────────────────────────────────────────────────
+
 TabVisual:CreateSection("Player ESP")
 TabVisual:CreateToggle({
     Name = "ESP", CurrentValue = false,
     Callback = function(v)
-        espEnabled = v
-        if v then createESP() else clearESP() end
+        state.espEnabled = v
+        if v then refreshESP() else clearESP() end
     end,
 })
 TabVisual:CreateColorPicker({
-    Name = "ESP Color", Color = espColor, Flag = "ESPColor",
+    Name = "ESP Color", Color = state.espColor, Flag = "ESPColor",
     Callback = function(v)
-        espColor = v
-        if espEnabled then updateESPColor() end
+        state.espColor = v
+        if state.espEnabled then updateESPColors() end
     end,
 })
 TabVisual:CreateButton({
     Name = "Refresh ESP",
-    Callback = function() if espEnabled then createESP() end end,
+    Callback = function()
+        if state.espEnabled then refreshESP() end
+    end,
 })
 
 TabVisual:CreateSection("PCLD ESP")
 TabVisual:CreateToggle({
     Name = "PCLD ESP", CurrentValue = false,
-    Callback = function(v) if v then enablePCLD() else disablePCLD() end end,
+    Callback = function(v)
+        if v then enablePCLD() else disablePCLD() end
+    end,
 })
 TabVisual:CreateColorPicker({
-    Name = "PCLD Color", Color = pcldColor, Flag = "PCLDCol",
+    Name = "PCLD Color", Color = state.pcldColor, Flag = "PCLDCol",
     Callback = function(v)
-        pcldColor = v
-        if pcldOn and trackedPCLD then applyPCLD() end
+        state.pcldColor = v
+        if state.pcldOn and trackedPCLD then stylePCLD() end
     end,
 })
 TabVisual:CreateSlider({
     Name = "PCLD Transparency", Range = {0, 1}, Increment = 0.05,
-    Suffix = "", CurrentValue = pcldTrans, Flag = "PCLDTr",
+    Suffix = "", CurrentValue = state.pcldTrans, Flag = "PCLDTr",
     Callback = function(v)
-        pcldTrans = v
-        if pcldOn and trackedPCLD then applyPCLD() end
+        state.pcldTrans = v
+        if state.pcldOn and trackedPCLD then stylePCLD() end
     end,
 })
 
 TabVisual:CreateSection("Network")
 TabVisual:CreateToggle({
     Name = "Packet Detector", CurrentValue = false,
-    Callback = function(v) _G.PacketMonitor = v end,
+    Callback = function(v) state.packetMon = v; _G.PacketMonitor = v end,
 })
-
-local simOn = false
 TabVisual:CreateToggle({
     Name = "PCLD SimRadius", CurrentValue = false,
-    Callback = function(v) simOn = v end,
+    Callback = function(v) state.simRadius = v end,
 })
-
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        if simOn then
-            pcall(function()
-                LP.SimulationRadius       = math.huge
-                LP.MaximumSimulationRadius = math.huge
-                settings().Physics.AllowSleep = false
-            end)
-            if selectedTarget then
-                local hrp = getHRP(selectedTarget)
-                if hrp then fireOwner(hrp, hrp.CFrame) end
-            end
-        end
-    end
-end)
