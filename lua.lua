@@ -244,8 +244,8 @@ local function KickPlayer(target)
             bp = Instance.new("BodyPosition")
             bp.Name = "KickBP"
             bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-            bp.D = KICK_BP_D
-            bp.P = KICK_BP_P
+            bp.D = 10
+            bp.P = math.huge
             bp.Parent = tHRP
         end
         bp.Position = holdPos
@@ -255,7 +255,7 @@ local function KickPlayer(target)
             bg = Instance.new("BodyGyro")
             bg.Name = "KickBG"
             bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-            bg.D = KICK_BG_D
+            bg.D = 50
             bg.Parent = tHRP
         end
         bg.CFrame = lookCF
@@ -283,7 +283,7 @@ local function KickPlayer(target)
         end)
     end
 
-    -- ПОТОК 1: Heartbeat — ownership + BodyMovers + freeze каждый кадр
+    -- ПОТОК 1: Heartbeat — ownership + BodyMovers + freeze
     local hb = RunService.Heartbeat:Connect(function()
         if not active then return end
         pcall(function()
@@ -296,11 +296,9 @@ local function KickPlayer(target)
             local mHRP = getHRP(LP)
             if not mHRP then return end
 
-            -- ownership
             fireOwner(tHRP, tHRP.CFrame)
             fireDestroy(tHRP)
 
-            -- freeze
             tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
             tHRP.Velocity = Vector3.new(0, 0, 0)
@@ -308,14 +306,13 @@ local function KickPlayer(target)
 
             if tHum then tHum.PlatformStand = true end
 
-            -- BodyMovers — создаёт если нет, обновляет позицию
-            local holdPos = mHRP.Position + KICK_HOLD_OFFSET
+            local holdPos = mHRP.Position + Vector3.new(0, 15, 0)
             ensureBM(tHRP, holdPos, mHRP.CFrame)
         end)
     end)
     table.insert(conns, hb)
 
-    -- ПОТОК 2: full body ownership каждые 0.1с
+    -- ПОТОК 2: full body ownership
     task.spawn(function()
         while active do
             pcall(function()
@@ -323,7 +320,7 @@ local function KickPlayer(target)
                 local tChar = target.Character
                 if tChar then claimFullBody(tChar) end
             end)
-            task.wait(0.1)
+            task.wait()
         end
     end)
 
@@ -338,12 +335,13 @@ local function KickPlayer(target)
                     fireDestroy(tHRP)
                 end
             end)
-            task.wait(SPAM_INTERVAL)
+            task.wait()
         end
     end)
 
-    -- ПОТОК 4: принудительный TP каждые 2 сек для обновления ownership
+    -- ПОТОК 4: оружие + TP перехват если далеко
     task.spawn(function()
+        local lastGrab = 0
         while active do
             pcall(function()
                 if not target or not target.Parent then return end
@@ -351,30 +349,31 @@ local function KickPlayer(target)
                 local mHRP = getHRP(LP)
                 if not tHRP or not mHRP then return end
 
-                local oldCF = mHRP.CFrame
-                mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
+                removeWeapons()
 
-                local tChar = target.Character
-                if tChar then claimFullBody(tChar) end
-                for _ = 1, 5 do
-                    fireOwner(tHRP, tHRP.CFrame)
-                    fireDestroy(tHRP)
+                local dist = (mHRP.Position - tHRP.Position).Magnitude
+                if dist > 30 and tHRP.Position.Y < 2000 then
+                    local now = tick()
+                    if now - lastGrab > 0.6 then
+                        lastGrab = now
+                        local oldCF = mHRP.CFrame
+                        mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
+
+                        local tChar = target.Character
+                        if tChar then claimFullBody(tChar) end
+                        for _ = 1, 5 do
+                            fireOwner(tHRP, tHRP.CFrame)
+                            fireDestroy(tHRP)
+                        end
+
+                        task.wait(0.2)
+                        pcall(function()
+                            if mHRP and mHRP.Parent then mHRP.CFrame = oldCF end
+                        end)
+                    end
                 end
-
-                task.wait(0.15)
-                pcall(function()
-                    if mHRP and mHRP.Parent then mHRP.CFrame = oldCF end
-                end)
             end)
-            task.wait(2)
-        end
-    end)
-
-    -- ПОТОК 5: оружие
-    task.spawn(function()
-        while active do
-            removeWeapons()
-            task.wait(WEAPON_INTERVAL)
+            task.wait(0.12)
         end
         cleanup()
     end)
@@ -962,6 +961,7 @@ task.spawn(function()
         end
     end
 end)
+
 
 
 
