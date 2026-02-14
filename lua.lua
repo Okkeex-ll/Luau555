@@ -1,7 +1,7 @@
 -- [[ RAYFIELD ]]
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-    Name = "Universal Hack v11",
+    Name = "fife | 0.1",
     LoadingTitle = "Loading...",
     ConfigurationSaving = {
         Enabled = false,
@@ -93,25 +93,17 @@ local function KickPlayer(targetPlayer)
 
     local kickActive = true
     local connections = {}
-    local hasOwnership = false
-    local ownershipLostCount = 0
+    local frameCounter = 0
     local lastGrabTime = 0
 
-    -- Респавн — ждём и перехватываем заново
-    local respawnConn = targetPlayer.CharacterAdded:Connect(function(newChar)
-        hasOwnership = false
-        ownershipLostCount = 0
+    local respawnConn = targetPlayer.CharacterAdded:Connect(function()
         task.wait(1.5)
     end)
     table.insert(connections, respawnConn)
 
-    local frameCounter = 0
-
     local heartbeatConn = RunService.Heartbeat:Connect(function()
         if not kickActive then return end
         if not targetPlayer or not targetPlayer.Parent then return end
-
-        frameCounter = frameCounter + 1
 
         local tChar = targetPlayer.Character
         if not tChar then return end
@@ -124,34 +116,68 @@ local function KickPlayer(targetPlayer)
         local mHRP = myChar:FindFirstChild("HumanoidRootPart")
         if not mHRP then return end
 
-        local dist = (mHRP.Position - tHRP.Position).Magnitude
+        frameCounter = frameCounter + 1
 
-        -- Локальные операции — каждый кадр (бесплатно)
+        -- === ЛОКАЛЬНО (каждый кадр, бесплатно) ===
         pcall(function()
             tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            tHRP.Velocity = Vector3.new(0, 0, 0)
+            tHRP.RotVelocity = Vector3.new(0, 0, 0)
         end)
 
         if tHum then
             tHum.PlatformStand = true
         end
 
-        -- Проверяем ownership: если цель далеко — значит потеряли
-        if dist > 40 then
-            hasOwnership = false
+        -- BodyPosition — каждый кадр обновляем позицию
+        local holdPos = mHRP.Position + Vector3.new(0, 15, 0)
+
+        local bp = tHRP:FindFirstChild("KickBP")
+        if not bp then
+            bp = Instance.new("BodyPosition")
+            bp.Name = "KickBP"
+            bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            bp.D = 400
+            bp.P = 50000
+            bp.Parent = tHRP
+        end
+        bp.Position = holdPos
+
+        local bg = tHRP:FindFirstChild("KickBG")
+        if not bg then
+            bg = Instance.new("BodyGyro")
+            bg.Name = "KickBG"
+            bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+            bg.D = 200
+            bg.Parent = tHRP
+        end
+        bg.CFrame = mHRP.CFrame
+
+        -- CFrame lock если рядом
+        local dist = (mHRP.Position - tHRP.Position).Magnitude
+        if dist < 30 then
+            pcall(function()
+                tHRP.CFrame = CFrame.new(holdPos)
+            end)
         end
 
-        -- Серверные вызовы — раз в 3 кадра
-        if frameCounter % 3 == 0 then
-            if tHRP.Position.Y < 2000 and setOwner and destroyGrabLine then
-                setOwner:FireServer(tHRP, tHRP.CFrame)
-                destroyGrabLine:FireServer(tHRP)
+        -- === СЕРВЕР (1 вызов на кадр, чередуем) ===
+        if tHRP.Position.Y < 2000 then
+            if frameCounter % 2 == 0 then
+                if setOwner then
+                    setOwner:FireServer(tHRP, tHRP.CFrame)
+                end
+            else
+                if destroyGrabLine then
+                    destroyGrabLine:FireServer(tHRP)
+                end
             end
         end
     end)
     table.insert(connections, heartbeatConn)
 
-    -- Основной цикл
+    -- Отдельный поток: TP-перехват + оружие
     task.spawn(function()
         while kickActive do
             if not targetPlayer or not targetPlayer.Parent then break end
@@ -162,29 +188,6 @@ local function KickPlayer(targetPlayer)
                 local tHRP = targetChar:FindFirstChild("HumanoidRootPart")
                 local mHRP = myChar:FindFirstChild("HumanoidRootPart")
                 if tHRP and mHRP then
-                    local holdPos = mHRP.Position + Vector3.new(0, 15, 0)
-                    local dist = (mHRP.Position - tHRP.Position).Magnitude
-
-                    -- BodyMovers
-                    local bp = tHRP:FindFirstChild("KickBP")
-                    if not bp then
-                        bp = Instance.new("BodyPosition")
-                        bp.Name = "KickBP"
-                        bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-                        bp.D = 200
-                        bp.P = 20000
-                        bp.Parent = tHRP
-                    end
-                    bp.Position = holdPos
-
-                    local bg = tHRP:FindFirstChild("KickBG")
-                    if not bg then
-                        bg = Instance.new("BodyGyro")
-                        bg.Name = "KickBG"
-                        bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-                        bg.Parent = tHRP
-                    end
-                    bg.CFrame = mHRP.CFrame
 
                     -- Убираем оружие
                     local spawned = Workspace:FindFirstChild(targetPlayer.Name .. "SpawnedInToys")
@@ -201,38 +204,29 @@ local function KickPlayer(targetPlayer)
                         if spawned:FindFirstChild("NinjaShuriken") then yeet(spawned.NinjaShuriken:FindFirstChild("SoundPart")) end
                     end
 
-                    -- TP к цели ТОЛЬКО если далеко И нет ownership
-                    -- Если цель сбежала (dist > 25) — телепортимся, берём, возвращаемся
-                    -- Если цель рядом (dist < 25) — НЕ дёргаемся
-                    if dist > 25 and tHRP.Position.Y < 2000 then
+                    -- Перехват если далеко
+                    local dist = (mHRP.Position - tHRP.Position).Magnitude
+                    if dist > 30 and tHRP.Position.Y < 2000 then
                         local now = tick()
-                        -- Кулдаун 0.5 сек чтоб не дёргаться туда-сюда
-                        if now - lastGrabTime > 0.5 then
+                        if now - lastGrabTime > 0.7 then
                             lastGrabTime = now
                             local oldCF = mHRP.CFrame
-                            mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 5)
+                            mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
 
                             for _ = 1, 3 do
                                 setOwner:FireServer(tHRP, tHRP.CFrame)
                                 destroyGrabLine:FireServer(tHRP)
                             end
 
-                            task.wait(0.2)
-                            -- Возвращаемся ТОЛЬКО если персонаж ещё жив
+                            task.wait(0.25)
                             if myChar and myChar.Parent and mHRP and mHRP.Parent then
                                 mHRP.CFrame = oldCF
                             end
-                            hasOwnership = true
-                            ownershipLostCount = 0
                         end
-                    else
-                        -- Цель рядом — ownership есть
-                        hasOwnership = true
-                        ownershipLostCount = 0
                     end
                 end
             end
-            task.wait(0.1)
+            task.wait(0.15)
         end
 
         -- Очистка
@@ -247,7 +241,9 @@ local function KickPlayer(targetPlayer)
                 if r:FindFirstChild("KickBP") then r.KickBP:Destroy() end
                 if r:FindFirstChild("KickBG") then r.KickBG:Destroy() end
             end
-            if h then h.PlatformStand = false end
+            if h then
+                h.PlatformStand = false
+            end
         end
     end)
 
@@ -392,16 +388,10 @@ UIS.InputBegan:Connect(function(input, processed)
         if model then
             local plr = Players:GetPlayerFromCharacter(model)
             if plr and plr ~= LocalPlayer then
-                -- Если уже кикаем кого-то другого — не даём сменить
                 if _G.KickEnabled and selectedTarget and selectedTarget ~= plr and selectedTarget.Parent then
-                    Rayfield:Notify({
-                        Title = "Blocked",
-                        Content = "Already kicking " .. selectedTarget.Name .. "! Stop kick first.",
-                        Duration = 3
-                    })
+                    Rayfield:Notify({Title = "Blocked", Content = "Already kicking " .. selectedTarget.Name .. "! Stop kick first.", Duration = 3})
                     return
                 end
-
                 selectedTarget = plr
                 AddToSaved(plr.Name)
                 Rayfield:Notify({Title = "Selected", Content = plr.Name, Duration = 2})
@@ -465,7 +455,6 @@ local TabMove = Window:CreateTab("Movement", 4483362458)
 local TabVisual = Window:CreateTab("Visuals", 4483362458)
 local TabPhys = Window:CreateTab("Physics", 4483362458)
 
--- === TARGET MANAGER ===
 TabCombat:CreateSection("Target Manager")
 
 TabCombat:CreateDropdown({
@@ -477,8 +466,6 @@ TabCombat:CreateDropdown({
         local name = Value
         if type(Value) == "table" then name = Value[1] end
         if not name or name == "No players" then return end
-
-        -- Блокируем смену цели во время кика
         if _G.KickEnabled and selectedTarget and selectedTarget.Parent then
             local newPlr = Players:FindFirstChild(name)
             if newPlr and newPlr ~= selectedTarget then
@@ -486,13 +473,10 @@ TabCombat:CreateDropdown({
                 return
             end
         end
-
         selectedTarget = Players:FindFirstChild(name)
         AddToSaved(name)
         Rayfield:Notify({Title = "Selected", Content = name, Duration = 2})
-        if _G.KickEnabled and selectedTarget then
-            KickPlayer(selectedTarget)
-        end
+        if _G.KickEnabled and selectedTarget then KickPlayer(selectedTarget) end
     end,
 })
 
@@ -505,8 +489,6 @@ DropSaved = TabCombat:CreateDropdown({
         local name = Value
         if type(Value) == "table" then name = Value[1] end
         if not name or name == "Empty" then return end
-
-        -- Блокируем смену цели во время кика
         if _G.KickEnabled and selectedTarget and selectedTarget.Parent then
             local newPlr = Players:FindFirstChild(name)
             if newPlr and newPlr ~= selectedTarget then
@@ -514,15 +496,12 @@ DropSaved = TabCombat:CreateDropdown({
                 return
             end
         end
-
         currentSaved = name
         local plr = Players:FindFirstChild(name)
         if plr then
             selectedTarget = plr
             Rayfield:Notify({Title = "Locked", Content = name, Duration = 2})
-            if _G.KickEnabled then
-                KickPlayer(selectedTarget)
-            end
+            if _G.KickEnabled then KickPlayer(selectedTarget) end
         else
             Rayfield:Notify({Title = "Offline", Content = name .. " not in server", Duration = 3})
         end
@@ -570,7 +549,6 @@ Players.PlayerRemoving:Connect(function(plr)
     end
 end)
 
--- === KICK ===
 TabCombat:CreateSection("Kick")
 
 TabCombat:CreateToggle({
@@ -591,7 +569,6 @@ TabCombat:CreateToggle({
     end,
 })
 
--- === SELECT BIND ===
 TabCombat:CreateSection("Select Bind")
 
 local bindLabel = TabCombat:CreateLabel("Current bind: E")
@@ -609,11 +586,10 @@ TabCombat:CreateButton({
 })
 
 TabCombat:CreateParagraph({
-    Title = "Controls",
-    Content = "Bind = aim + press to select target\nT = teleport to mouse\nCan only kick 1 target at a time\nTarget escapes → auto re-grab with cooldown\nNo teleport spam = no glitching",
+    Title = "How it works",
+    Content = "Every frame: velocity lock + BodyPosition + CFrame lock\nServer: 1 call/frame alternating (no ping spike)\nIf target escapes: auto TP re-grab",
 })
 
--- === MOVEMENT ===
 TabMove:CreateSection("Teleport")
 TabMove:CreateToggle({Name = "Loop TP to Target", CurrentValue = false, Callback = function(v) loopTPActive = v end})
 
@@ -630,17 +606,9 @@ TabMove:CreateSlider({Name = "Jump Power", Range = {50, 300}, Increment = 5, Suf
 end})
 TabMove:CreateToggle({Name = "Noclip", CurrentValue = false, Callback = function(v) ToggleNoclip(v) end})
 
--- === VISUALS ===
 TabVisual:CreateSection("ESP")
 TabVisual:CreateToggle({Name = "Player ESP", CurrentValue = false, Callback = function(v) espActive = v if v then CreateESP() else ClearESP() end end})
 TabVisual:CreateButton({Name = "Refresh ESP", Callback = function() if espActive then CreateESP() end end})
 
--- === PHYSICS ===
 TabPhys:CreateToggle({Name = "PCLD", CurrentValue = false, Callback = function(v) pcldActive = v end})
 TabPhys:CreateToggle({Name = "Packet Detector", CurrentValue = false, Callback = function(v) _G.PacketMonitor = v end})
-
-
-
-
-
-print("Good All")
