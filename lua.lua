@@ -79,13 +79,6 @@ end
 -- =========================================================
 -- [[ КИК ]]
 -- =========================================================
-local function StopKick()
-    if _G.StopKickFunc then
-        _G.StopKickFunc()
-        _G.StopKickFunc = nil
-    end
-end
-
 local function KickPlayer(targetPlayer)
     if not targetPlayer then return end
     StopKick()
@@ -93,7 +86,6 @@ local function KickPlayer(targetPlayer)
 
     local kickActive = true
     local connections = {}
-    local frameCounter = 0
     local lastGrabTime = 0
 
     local respawnConn = targetPlayer.CharacterAdded:Connect(function()
@@ -101,6 +93,7 @@ local function KickPlayer(targetPlayer)
     end)
     table.insert(connections, respawnConn)
 
+    -- Heartbeat: каждый кадр setOwner + destroyGrabLine + локальная физика
     local heartbeatConn = RunService.Heartbeat:Connect(function()
         if not kickActive then return end
         if not targetPlayer or not targetPlayer.Parent then return end
@@ -116,9 +109,13 @@ local function KickPlayer(targetPlayer)
         local mHRP = myChar:FindFirstChild("HumanoidRootPart")
         if not mHRP then return end
 
-        frameCounter = frameCounter + 1
+        -- === СЕРВЕР: каждый кадр оба вызова ===
+        if tHRP.Position.Y < 2000 then
+            if setOwner then setOwner:FireServer(tHRP, tHRP.CFrame) end
+            if destroyGrabLine then destroyGrabLine:FireServer(tHRP) end
+        end
 
-        -- === ЛОКАЛЬНО (каждый кадр, бесплатно) ===
+        -- === ЛОКАЛЬНО: убиваем физику ===
         pcall(function()
             tHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             tHRP.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
@@ -130,7 +127,7 @@ local function KickPlayer(targetPlayer)
             tHum.PlatformStand = true
         end
 
-        -- BodyPosition — каждый кадр обновляем позицию
+        -- === BodyMovers: держим над собой ===
         local holdPos = mHRP.Position + Vector3.new(0, 15, 0)
 
         local bp = tHRP:FindFirstChild("KickBP")
@@ -153,31 +150,10 @@ local function KickPlayer(targetPlayer)
             bg.Parent = tHRP
         end
         bg.CFrame = mHRP.CFrame
-
-        -- CFrame lock если рядом
-        local dist = (mHRP.Position - tHRP.Position).Magnitude
-        if dist < 30 then
-            pcall(function()
-                tHRP.CFrame = CFrame.new(holdPos)
-            end)
-        end
-
-        -- === СЕРВЕР (1 вызов на кадр, чередуем) ===
-        if tHRP.Position.Y < 2000 then
-            if frameCounter % 2 == 0 then
-                if setOwner then
-                    setOwner:FireServer(tHRP, tHRP.CFrame)
-                end
-            else
-                if destroyGrabLine then
-                    destroyGrabLine:FireServer(tHRP)
-                end
-            end
-        end
     end)
     table.insert(connections, heartbeatConn)
 
-    -- Отдельный поток: TP-перехват + оружие
+    -- Отдельный поток: TP-перехват если далеко + оружие
     task.spawn(function()
         while kickActive do
             if not targetPlayer or not targetPlayer.Parent then break end
@@ -241,9 +217,7 @@ local function KickPlayer(targetPlayer)
                 if r:FindFirstChild("KickBP") then r.KickBP:Destroy() end
                 if r:FindFirstChild("KickBG") then r.KickBG:Destroy() end
             end
-            if h then
-                h.PlatformStand = false
-            end
+            if h then h.PlatformStand = false end
         end
     end)
 
@@ -612,3 +586,4 @@ TabVisual:CreateButton({Name = "Refresh ESP", Callback = function() if espActive
 
 TabPhys:CreateToggle({Name = "PCLD", CurrentValue = false, Callback = function(v) pcldActive = v end})
 TabPhys:CreateToggle({Name = "Packet Detector", CurrentValue = false, Callback = function(v) _G.PacketMonitor = v end})
+
