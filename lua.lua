@@ -182,13 +182,6 @@ end
 -- ============================================================
 -- KICK — StopKick ПЕРЕД KickPlayer
 -- ============================================================
-local function StopKick()
-    if _G.StopKickFunc then
-        pcall(function() _G.StopKickFunc() end)
-        _G.StopKickFunc = nil
-    end
-end
-
 local function KickPlayer(target)
     if not target then return end
     StopKick()
@@ -217,6 +210,22 @@ local function KickPlayer(target)
     end)
     table.insert(conns, rc)
 
+    -- Heartbeat: доп спам ownership каждый кадр
+    local hb = RunService.Heartbeat:Connect(function()
+        if not active then return end
+        if not target or not target.Parent then return end
+        local tChar = target.Character
+        if not tChar then return end
+        local tHRP = tChar:FindFirstChild("HumanoidRootPart")
+        if not tHRP then return end
+        if tHRP.Position.Y < 2000 then
+            setOwner:FireServer(tHRP, tHRP.CFrame)
+            destroyGrabLine:FireServer(tHRP)
+        end
+    end)
+    table.insert(conns, hb)
+
+    -- основной цикл: ownership + freeze + BodyMovers + оружие + TP
     task.spawn(function()
         while active do
             if not target or not target.Parent then break end
@@ -232,6 +241,8 @@ local function KickPlayer(target)
                 if tHRP and mHRP then
                     -- ownership
                     if tHRP.Position.Y < 2000 then
+                        setOwner:FireServer(tHRP, tHRP.CFrame)
+                        destroyGrabLine:FireServer(tHRP)
                         setOwner:FireServer(tHRP, tHRP.CFrame)
                         destroyGrabLine:FireServer(tHRP)
                     end
@@ -279,10 +290,10 @@ local function KickPlayer(target)
                     if tHRP.Position.Y < 2000 and dist > 25 then
                         local oldCF = mHRP.CFrame
                         mHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 5)
-                        setOwner:FireServer(tHRP, tHRP.CFrame)
-                        destroyGrabLine:FireServer(tHRP)
-                        setOwner:FireServer(tHRP, tHRP.CFrame)
-                        destroyGrabLine:FireServer(tHRP)
+                        for _ = 1, 3 do
+                            setOwner:FireServer(tHRP, tHRP.CFrame)
+                            destroyGrabLine:FireServer(tHRP)
+                        end
                         task.wait(0.15)
                         if myChar and mHRP and mHRP.Parent then
                             mHRP.CFrame = oldCF
@@ -780,5 +791,6 @@ task.spawn(function()
         end
     end
 end)
+
 
 
