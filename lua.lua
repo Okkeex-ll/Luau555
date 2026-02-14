@@ -34,9 +34,9 @@ local Mouse = LP:GetMouse()
 local CFG = {
     KICK = {
         -- BodyPosition
-        BP_POWER      = 30000,    -- жёсткость притяжения
-        BP_DAMP       = 200,      -- демпфирование (плавность)
-        BP_OFFSET_Y   = 5,        -- высота над LP (стадов)
+        BP_POWER      = 300000,    -- жёсткость притяжения
+        BP_DAMP       = 1,      -- демпфирование (плавность)
+        BP_OFFSET_Y   = 15,        -- высота над LP (стадов)
 
         -- BodyGyro
         BG_POWER      = 15000,
@@ -1263,3 +1263,4 @@ TabVisual:CreateToggle({
     Name = "PCLD SimRadius", CurrentValue = false,
     Callback = function(v) state.simRadius = v end,
 })
+
