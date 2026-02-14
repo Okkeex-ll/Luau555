@@ -1263,4 +1263,3 @@ TabVisual:CreateToggle({
     Name = "PCLD SimRadius", CurrentValue = false,
     Callback = function(v) state.simRadius = v end,
 })
-
